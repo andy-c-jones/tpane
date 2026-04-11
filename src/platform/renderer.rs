@@ -82,7 +82,21 @@ pub fn render(
                 Style::default().fg(Color::DarkGray)
             };
 
-            let title = if is_active { " tpane [active] " } else { " tpane " };
+            // Use the terminal's OSC title if set, otherwise "tpane".
+            let pane_title = panes.get(pane_id)
+                .map(|p| p.title())
+                .filter(|t| !t.is_empty());
+            let title = if is_active {
+                match &pane_title {
+                    Some(t) => format!(" {} [active] ", t),
+                    None => " tpane [active] ".to_string(),
+                }
+            } else {
+                match &pane_title {
+                    Some(t) => format!(" {} ", t),
+                    None => " tpane ".to_string(),
+                }
+            };
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_style(border_style)

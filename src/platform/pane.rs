@@ -27,12 +27,20 @@ pub enum PaneEvent {
 pub struct TpaneEventListener {
     sender: mpsc::Sender<PaneEvent>,
     pane_id: PaneId,
+    title: Arc<Mutex<String>>,
 }
 
 impl EventListener for TpaneEventListener {
-    fn send_event(&self, _event: TermEvent) {
-        // We don't need to act on terminal-internal events (bell, clipboard, etc.)
-        // for basic multiplexer functionality. Extend here later if needed.
+    fn send_event(&self, event: TermEvent) {
+        match event {
+            TermEvent::Title(t) => {
+                *self.title.lock() = t;
+            }
+            TermEvent::ResetTitle => {
+                self.title.lock().clear();
+            }
+            _ => {}
+        }
     }
 }
 
@@ -60,6 +68,8 @@ pub struct PaneState {
     pending_resize: Arc<Mutex<Option<(u16, u16)>>>,
     /// True once the PTY background spawn has completed and shell is connected.
     ready: Arc<std::sync::atomic::AtomicBool>,
+    /// Terminal title set via OSC escape sequences (e.g. by the shell or running program).
+    title: Arc<Mutex<String>>,
 }
 
 impl PaneState {
@@ -73,7 +83,12 @@ impl PaneState {
     ) -> Result<Self> {
         // Create the alacritty Term immediately (cheap, no I/O).
         let term_config = TermConfig { kitty_keyboard: true, ..TermConfig::default() };
-        let listener = TpaneEventListener { sender: event_tx.clone(), pane_id: id };
+        let title: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let listener = TpaneEventListener {
+            sender: event_tx.clone(),
+            pane_id: id,
+            title: title.clone(),
+        };
         let term_size = TermSize { cols: cols as usize, rows: rows as usize };
         let term = Arc::new(FairMutex::new(Term::new(term_config, &term_size, listener)));
 
@@ -105,6 +120,7 @@ impl PaneState {
             rows,
             pending_resize,
             ready,
+            title,
         })
     }
 
@@ -139,6 +155,12 @@ impl PaneState {
     /// Whether the PTY has finished spawning and the shell is connected.
     pub fn is_ready(&self) -> bool {
         self.ready.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The terminal title set by the running program via OSC escape sequences.
+    /// Returns an empty string if no title has been set.
+    pub fn title(&self) -> String {
+        self.title.lock().clone()
     }
 }
 fn spawn_pty(
