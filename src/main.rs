@@ -30,7 +30,7 @@ fn main() -> Result<()> {
 fn run(config: LuaConfig, tui: &mut renderer::Tui) -> Result<()> {
     let size = crossterm::terminal::size()?;
     let mut factory = LivePaneFactory::new();
-    let mut app = app::App::new(config.keymap, size, &factory)?;
+    let mut app = app::App::new(config.keymap, size, config.show_cheatsheet, &factory)?;
     let mut events = LiveEventSource::new(factory.event_rx());
     let mut renderer = LiveRenderer::new(tui);
     app.run(&mut events, &mut renderer, &factory)

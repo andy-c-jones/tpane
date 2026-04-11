@@ -87,11 +87,12 @@ impl PaneFactory<HeadlessPaneBackend> for HeadlessPaneFactory {
 /// Renderer that counts frames without producing real output.
 pub struct HeadlessRenderer {
     pub frame_count: usize,
+    pub last_cheatsheet_visible: bool,
 }
 
 impl HeadlessRenderer {
     pub fn new() -> Self {
-        Self { frame_count: 0 }
+        Self { frame_count: 0, last_cheatsheet_visible: false }
     }
 }
 
@@ -101,8 +102,10 @@ impl Renderer<HeadlessPaneBackend> for HeadlessRenderer {
         _layout: &Layout,
         _panes: &HashMap<PaneId, HeadlessPaneBackend>,
         _terminal_size: (u16, u16),
+        prefix_active: bool,
     ) -> Result<()> {
         self.frame_count += 1;
+        self.last_cheatsheet_visible = prefix_active;
         Ok(())
     }
 }

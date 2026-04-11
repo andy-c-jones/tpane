@@ -12,6 +12,8 @@ pub struct LuaConfig {
     pub keymap: KeyMap,
     /// Commands to run at startup (from tpane.on_startup).
     pub startup_commands: Vec<Command>,
+    /// Show keybinding cheatsheet when prefix key is active.
+    pub show_cheatsheet: bool,
     _lua: Lua,
 }
 
@@ -84,7 +86,6 @@ impl LuaConfig {
 
             // tpane.on_startup(fn) — accepted but startup logic is deferred via __startup__ keys
             let on_startup_fn = {
-                let b = bindings_ref.clone();
                 lua.create_function(move |_, f: LuaFunction| {
                     // Call immediately so split helpers can record their commands
                     let _ = f.call::<(), ()>(());
@@ -104,11 +105,21 @@ impl LuaConfig {
                 tpane_table.set(n, stub)?;
             }
 
+            // Default settings (can be overridden by user Lua code).
+            tpane_table.set("show_cheatsheet", true)?;
+
             lua.globals().set("tpane", tpane_table)?;
         }
 
         // Execute the Lua source.
         lua.load(source).set_name("main.lua").exec().map_err(anyhow::Error::from).context("executing lua source")?;
+
+        // Read back settings from the tpane table.
+        let show_cheatsheet = lua.globals()
+            .get::<_, LuaTable>("tpane")
+            .ok()
+            .and_then(|t| t.get::<_, bool>("show_cheatsheet").ok())
+            .unwrap_or(true); // default: on
 
         // Apply collected bindings to the keymap; collect startup commands.
         let mut startup_commands: Vec<Command> = Vec::new();
@@ -128,7 +139,7 @@ impl LuaConfig {
             }
         }
 
-        Ok(LuaConfig { keymap, startup_commands, _lua: lua })
+        Ok(LuaConfig { keymap, startup_commands, show_cheatsheet, _lua: lua })
     }
 }
 
@@ -246,6 +257,26 @@ end)
         let cfg = LuaConfig::load_from_source("").unwrap();
         // No custom bindings; default bindings from KeyMap::default() still apply.
         assert!(cfg.startup_commands.is_empty());
+    }
+
+    // ── show_cheatsheet config ───────────────────────────────────────────────
+
+    #[test]
+    fn default_config_enables_cheatsheet() {
+        let cfg = LuaConfig::load_from_source(DEFAULT_CONFIG).unwrap();
+        assert!(cfg.show_cheatsheet);
+    }
+
+    #[test]
+    fn cheatsheet_defaults_to_true_when_not_set() {
+        let cfg = LuaConfig::load_from_source("").unwrap();
+        assert!(cfg.show_cheatsheet);
+    }
+
+    #[test]
+    fn cheatsheet_can_be_disabled_via_lua() {
+        let cfg = LuaConfig::load_from_source("tpane.show_cheatsheet = false").unwrap();
+        assert!(!cfg.show_cheatsheet);
     }
 }
 

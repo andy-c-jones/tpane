@@ -40,5 +40,6 @@ pub trait Renderer<B: PaneBackend> {
         layout: &crate::core::layout::Layout,
         panes: &std::collections::HashMap<PaneId, B>,
         terminal_size: (u16, u16),
+        prefix_active: bool,
     ) -> Result<()>;
 }

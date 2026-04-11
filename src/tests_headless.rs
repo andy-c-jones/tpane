@@ -8,7 +8,7 @@ mod tests {
     use crate::core::keymap::KeyMap;
     use crate::core::layout::PaneId;
     use crate::headless::*;
-    use crate::traits::AppEvent;
+    use crate::traits::{AppEvent, Renderer};
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -16,7 +16,7 @@ mod tests {
 
     fn default_app() -> (App<HeadlessPaneBackend>, HeadlessPaneFactory) {
         let factory = HeadlessPaneFactory;
-        let app = App::new(KeyMap::default(), TERM_SIZE, &factory).unwrap();
+        let app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
         (app, factory)
     }
 
@@ -373,5 +373,47 @@ mod tests {
         prefix_then(&mut app, &factory, KeyCode::Up, KeyModifiers::CONTROL);
         assert_eq!(app.pane_count(), 5);
         assert_eq!(app.layout.leaf_ids().len(), 5);
+    }
+
+    // ── cheatsheet visibility ────────────────────────────────────────────────
+
+    #[test]
+    fn cheatsheet_shown_when_prefix_active_and_enabled() {
+        let factory = HeadlessPaneFactory;
+        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
+        let mut renderer = HeadlessRenderer::new();
+        app.process_event(key_press(KeyCode::Char('b'), KeyModifiers::CONTROL), &factory).unwrap();
+        assert!(app.is_prefix_active());
+        let show_bar = app.is_prefix_active() && true;
+        renderer.render(&app.layout, &app.panes, TERM_SIZE, show_bar).unwrap();
+        assert!(renderer.last_cheatsheet_visible);
+    }
+
+    #[test]
+    fn cheatsheet_hidden_when_disabled() {
+        let factory = HeadlessPaneFactory;
+        let mut app = App::new(KeyMap::default(), TERM_SIZE, false, &factory).unwrap();
+        let mut renderer = HeadlessRenderer::new();
+        app.process_event(key_press(KeyCode::Char('b'), KeyModifiers::CONTROL), &factory).unwrap();
+        assert!(app.is_prefix_active());
+        // show_cheatsheet is false
+        let show_bar = app.is_prefix_active() && false;
+        renderer.render(&app.layout, &app.panes, TERM_SIZE, show_bar).unwrap();
+        assert!(!renderer.last_cheatsheet_visible);
+    }
+
+    #[test]
+    fn cheatsheet_hidden_after_prefix_deactivates() {
+        let (mut app, factory) = default_app();
+        let mut renderer = HeadlessRenderer::new();
+        // Activate prefix
+        app.process_event(key_press(KeyCode::Char('b'), KeyModifiers::CONTROL), &factory).unwrap();
+        assert!(app.is_prefix_active());
+        // Press unknown key → deactivates prefix
+        app.process_event(key_press(KeyCode::Char('z'), KeyModifiers::NONE), &factory).unwrap();
+        assert!(!app.is_prefix_active());
+        let show_bar = app.is_prefix_active() && true;
+        renderer.render(&app.layout, &app.panes, TERM_SIZE, show_bar).unwrap();
+        assert!(!renderer.last_cheatsheet_visible);
     }
 }

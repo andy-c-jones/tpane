@@ -12,7 +12,7 @@ use ratatui::text::{Line as TuiLine, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
 
-use crate::core::layout::{Layout, PaneId, Rect};
+use crate::core::layout::{Layout, PaneId};
 use crate::platform::pane::PaneState;
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
@@ -48,10 +48,15 @@ pub fn render(
     layout: &Layout,
     panes: &std::collections::HashMap<PaneId, PaneState>,
     terminal_size: (u16, u16),
+    prefix_active: bool,
 ) -> Result<()> {
     tui.draw(|frame| {
         let (w, h) = terminal_size;
-        let rects = layout.compute_rects(w, h);
+
+        // Reserve space for cheatsheet bar when prefix is active.
+        let cheatsheet_height: u16 = if prefix_active { 3 } else { 0 };
+        let pane_area_h = h.saturating_sub(cheatsheet_height);
+        let rects = layout.compute_rects(w, pane_area_h);
 
         for (pane_id, rect) in &rects {
             let is_active = *pane_id == layout.active;
@@ -84,8 +89,64 @@ pub fn render(
                 frame.render_widget(para, inner);
             }
         }
+
+        // Render cheatsheet bar at the bottom.
+        if prefix_active && cheatsheet_height > 0 && h > cheatsheet_height {
+            render_cheatsheet(frame, w, h, cheatsheet_height);
+        }
     })?;
     Ok(())
+}
+
+/// Draw a styled cheatsheet bar showing available keybindings.
+fn render_cheatsheet(
+    frame: &mut ratatui::Frame,
+    w: u16,
+    h: u16,
+    bar_height: u16,
+) {
+    let bar_rect = TuiRect {
+        x: 0,
+        y: h.saturating_sub(bar_height),
+        width: w,
+        height: bar_height,
+    };
+
+    let key_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let sep_style = Style::default().fg(Color::DarkGray);
+    let desc_style = Style::default().fg(Color::White);
+    let title_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+
+    let bindings: &[(&str, &str)] = &[
+        ("Ctrl+←", "Split Left"),
+        ("Ctrl+→", "Split Right"),
+        ("Ctrl+↑", "Split Up"),
+        ("Ctrl+↓", "Split Down"),
+        ("←↑↓→", "Focus"),
+        ("w", "Close"),
+        ("q", "Quit"),
+    ];
+
+    let mut spans: Vec<Span> = vec![
+        Span::styled(" tpane ", title_style),
+        Span::styled("│ ", sep_style),
+    ];
+    for (i, (key, desc)) in bindings.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" │ ", sep_style));
+        }
+        spans.push(Span::styled(*key, key_style));
+        spans.push(Span::styled(" ", desc_style));
+        spans.push(Span::styled(*desc, desc_style));
+    }
+
+    let line = TuiLine::from(spans);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(Span::styled(" Keybindings ", title_style));
+    let para = Paragraph::new(Text::from(line)).block(block);
+    frame.render_widget(para, bar_rect);
 }
 
 /// Convert the alacritty Term grid into ratatui Text for display.

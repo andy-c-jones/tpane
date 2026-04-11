@@ -19,12 +19,15 @@ pub struct App<B: PaneBackend> {
     running: bool,
     /// True when the prefix key has been pressed and we're awaiting the command key.
     prefix_active: bool,
+    /// Show keybinding cheatsheet when prefix is active.
+    show_cheatsheet: bool,
 }
 
 impl<B: PaneBackend> App<B> {
     pub fn new<F: PaneFactory<B>>(
         keymap: KeyMap,
         terminal_size: (u16, u16),
+        show_cheatsheet: bool,
         factory: &F,
     ) -> Result<Self> {
         let layout = Layout::new();
@@ -44,6 +47,7 @@ impl<B: PaneBackend> App<B> {
             terminal_size,
             running: true,
             prefix_active: false,
+            show_cheatsheet,
         })
     }
 
@@ -55,7 +59,8 @@ impl<B: PaneBackend> App<B> {
         factory: &F,
     ) -> Result<()> {
         while self.running {
-            renderer.render(&self.layout, &self.panes, self.terminal_size)?;
+            let show_bar = self.prefix_active && self.show_cheatsheet;
+            renderer.render(&self.layout, &self.panes, self.terminal_size, show_bar)?;
 
             match events.next_event(Duration::from_millis(16))? {
                 Some(AppEvent::Key(key)) if key.kind == KeyEventKind::Press => {

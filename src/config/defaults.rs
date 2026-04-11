@@ -37,4 +37,9 @@ tpane.bind("q", "quit")
 --   tpane.split_vertical()
 --   tpane.split_horizontal()
 -- end)
+
+-- Settings
+-- Show keybinding cheatsheet when prefix key (Ctrl+B) is pressed.
+-- Set to false to disable.
+tpane.show_cheatsheet = true
 "#;

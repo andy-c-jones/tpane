@@ -112,7 +112,8 @@ impl<'a> Renderer<PaneState> for LiveRenderer<'a> {
         layout: &Layout,
         panes: &HashMap<PaneId, PaneState>,
         terminal_size: (u16, u16),
+        prefix_active: bool,
     ) -> Result<()> {
-        renderer::render(self.tui, layout, panes, terminal_size)
+        renderer::render(self.tui, layout, panes, terminal_size, prefix_active)
     }
 }
