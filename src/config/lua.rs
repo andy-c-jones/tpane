@@ -1,0 +1,249 @@
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use mlua::prelude::*;
+
+use crate::config::defaults::DEFAULT_CONFIG;
+use crate::core::commands::Command;
+use crate::core::keymap::{KeyChord, KeyMap};
+
+/// Resolved configuration after loading main.lua.
+pub struct LuaConfig {
+    pub keymap: KeyMap,
+    /// Commands to run at startup (from tpane.on_startup).
+    pub startup_commands: Vec<Command>,
+    _lua: Lua,
+}
+
+impl LuaConfig {
+    /// Return the platform-appropriate config directory path.
+    pub fn config_dir() -> PathBuf {
+        // Linux/macOS: ~/.config/tpane
+        // Windows:     %APPDATA%\tpane
+        #[cfg(not(target_os = "windows"))]
+        let base = dirs::config_dir()
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")));
+        #[cfg(target_os = "windows")]
+        let base = dirs::config_dir()
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")));
+
+        base.join("tpane")
+    }
+
+    pub fn config_file() -> PathBuf {
+        Self::config_dir().join("main.lua")
+    }
+
+    /// Ensure the config directory and default file exist.
+    pub fn init_if_missing() -> Result<()> {
+        let dir = Self::config_dir();
+        if !dir.exists() {
+            std::fs::create_dir_all(&dir)
+                .with_context(|| format!("creating config dir {}", dir.display()))?;
+        }
+        let file = Self::config_file();
+        if !file.exists() {
+            std::fs::write(&file, DEFAULT_CONFIG)
+                .with_context(|| format!("writing default config to {}", file.display()))?;
+        }
+        Ok(())
+    }
+
+    /// Load and evaluate main.lua, returning the resolved config.
+    pub fn load() -> Result<Self> {
+        Self::init_if_missing()?;
+        let source = std::fs::read_to_string(Self::config_file())
+            .context("reading main.lua")?;
+        Self::load_from_source(&source)
+    }
+
+    /// Load config from a raw Lua source string (used in tests and for future embedding).
+    pub fn load_from_source(source: &str) -> Result<Self> {
+        let lua = Lua::new();
+        let mut keymap = KeyMap::default();
+
+        // Build the `tpane` table that Lua scripts interact with.
+        // Bindings are collected into a Rust-side Vec and applied after execution.
+        let bindings: std::sync::Arc<parking_lot::Mutex<Vec<(String, String)>>> =
+            std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+
+        {
+            let bindings_ref = bindings.clone();
+
+            let tpane_table = lua.create_table()?;
+
+            // tpane.bind(chord, command_name)
+            let bind_fn = {
+                let b = bindings_ref.clone();
+                lua.create_function(move |_, (chord, cmd): (String, String)| {
+                    b.lock().push((chord, cmd));
+                    Ok(())
+                })?
+            };
+            tpane_table.set("bind", bind_fn)?;
+
+            // tpane.on_startup(fn) — accepted but startup logic is deferred via __startup__ keys
+            let on_startup_fn = {
+                let b = bindings_ref.clone();
+                lua.create_function(move |_, f: LuaFunction| {
+                    // Call immediately so split helpers can record their commands
+                    let _ = f.call::<(), ()>(());
+                    Ok(())
+                })?
+            };
+            tpane_table.set("on_startup", on_startup_fn)?;
+
+            // Expose split helpers for use inside on_startup.
+            for name in &["split_vertical", "split_horizontal", "close", "focus_next", "focus_prev"] {
+                let n = *name;
+                let b = bindings_ref.clone();
+                let stub = lua.create_function(move |_, ()| {
+                    b.lock().push((format!("__startup__{}", n), String::new()));
+                    Ok(())
+                })?;
+                tpane_table.set(n, stub)?;
+            }
+
+            lua.globals().set("tpane", tpane_table)?;
+        }
+
+        // Execute the Lua source.
+        lua.load(source).set_name("main.lua").exec().map_err(anyhow::Error::from).context("executing lua source")?;
+
+        // Apply collected bindings to the keymap; collect startup commands.
+        let mut startup_commands: Vec<Command> = Vec::new();
+        for (chord_str, cmd_name) in bindings.lock().iter() {
+            if let Some(stripped) = chord_str.strip_prefix("__startup__") {
+                if let Some(cmd) = Command::from_name(stripped) {
+                    startup_commands.push(cmd);
+                }
+            } else if let Some(chord) = KeyChord::parse(chord_str) {
+                if let Some(cmd) = Command::from_name(cmd_name) {
+                    keymap.bind(chord, cmd);
+                } else {
+                    log::warn!("Unknown command '{}' in main.lua bind call", cmd_name);
+                }
+            } else {
+                log::warn!("Could not parse key chord '{}' in main.lua", chord_str);
+            }
+        }
+
+        Ok(LuaConfig { keymap, startup_commands, _lua: lua })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::defaults::DEFAULT_CONFIG;
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    fn ctrl_shift(c: char) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+    }
+
+    // ── default config loads without errors ───────────────────────────────────
+
+    #[test]
+    fn default_config_loads_successfully() {
+        let cfg = LuaConfig::load_from_source(DEFAULT_CONFIG).unwrap();
+        assert!(cfg.startup_commands.is_empty(), "default config should have no startup commands");
+    }
+
+    #[test]
+    fn default_config_has_split_vertical_binding() {
+        let cfg = LuaConfig::load_from_source(DEFAULT_CONFIG).unwrap();
+        let cmd = cfg.keymap.lookup(&ctrl_shift('t'));
+        assert_eq!(cmd, Some(&Command::SplitVertical));
+    }
+
+    #[test]
+    fn default_config_has_close_pane_binding() {
+        let cfg = LuaConfig::load_from_source(DEFAULT_CONFIG).unwrap();
+        let cmd = cfg.keymap.lookup(&ctrl_shift('w'));
+        assert_eq!(cmd, Some(&Command::ClosePane));
+    }
+
+    // ── custom bindings ───────────────────────────────────────────────────────
+
+    #[test]
+    fn custom_bind_overrides_default() {
+        let src = r#"tpane.bind("ctrl+shift+t", "quit")"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        // Default KeyMap has ctrl+shift+t → SplitVertical; Lua override should change it.
+        let cmd = cfg.keymap.lookup(&ctrl_shift('t'));
+        assert_eq!(cmd, Some(&Command::Quit));
+    }
+
+    #[test]
+    fn valid_bind_adds_to_keymap() {
+        let src = r#"tpane.bind("ctrl+shift+x", "focus_next")"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        let event = crossterm::event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(cfg.keymap.lookup(&event), Some(&Command::FocusNext));
+    }
+
+    #[test]
+    fn unknown_command_is_silently_ignored() {
+        // "badcmd" is not a known Command name — should not crash, just warn
+        let src = r#"tpane.bind("ctrl+shift+z", "badcmd")"#;
+        let result = LuaConfig::load_from_source(src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn bad_chord_is_silently_ignored() {
+        let src = r#"tpane.bind("not+a+chord", "quit")"#;
+        let result = LuaConfig::load_from_source(src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn duplicate_bind_last_wins() {
+        let src = r#"
+tpane.bind("ctrl+shift+d", "focus_next")
+tpane.bind("ctrl+shift+d", "focus_prev")
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        let event = crossterm::event::KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(cfg.keymap.lookup(&event), Some(&Command::FocusPrev));
+    }
+
+    // ── on_startup ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn on_startup_records_startup_commands() {
+        let src = r#"
+tpane.on_startup(function()
+  tpane.split_vertical()
+  tpane.split_horizontal()
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        assert_eq!(cfg.startup_commands, vec![Command::SplitVertical, Command::SplitHorizontal]);
+    }
+
+    #[test]
+    fn on_startup_empty_function_no_commands() {
+        let src = r#"tpane.on_startup(function() end)"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        assert!(cfg.startup_commands.is_empty());
+    }
+
+    // ── error handling ────────────────────────────────────────────────────────
+
+    #[test]
+    fn lua_syntax_error_returns_err() {
+        let src = r#"this is not valid lua !!!"#;
+        let result = LuaConfig::load_from_source(src);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_source_loads_successfully() {
+        let cfg = LuaConfig::load_from_source("").unwrap();
+        // No custom bindings; default bindings from KeyMap::default() still apply.
+        assert!(cfg.startup_commands.is_empty());
+    }
+}
+
