@@ -77,6 +77,9 @@ impl PaneState {
         // Reader for PTY output.
         let mut pty_reader = pair.master.try_clone_reader().context("cloning PTY reader")?;
 
+        // Drop the slave fd so the shell sees proper terminal setup and doesn't block.
+        drop(pair.slave);
+
         // Create the alacritty Term.
         let term_config = TermConfig { kitty_keyboard: true, ..TermConfig::default() };
         let listener = TpaneEventListener { sender: event_tx.clone(), pane_id: id };

@@ -122,9 +122,9 @@ fn render_cheatsheet(
         ("Ctrl+→", "Split Right"),
         ("Ctrl+↑", "Split Up"),
         ("Ctrl+↓", "Split Down"),
-        ("←↑↓→", "Focus"),
-        ("w", "Close"),
-        ("q", "Quit"),
+        ("←↑↓→", "Focus Pane"),
+        ("w", "Close Pane"),
+        ("q", "Quit tpane"),
     ];
 
     let mut spans: Vec<Span> = vec![

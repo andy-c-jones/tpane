@@ -47,12 +47,14 @@ pub struct Layout {
     pub root: Node,
     pub active: PaneId,
     next_id: u32,
+    /// Stack of previously focused pane IDs (most recent last).
+    focus_history: Vec<PaneId>,
 }
 
 impl Layout {
     pub fn new() -> Self {
         let root_id = PaneId(0);
-        Self { root: Node::Leaf(root_id), active: root_id, next_id: 1 }
+        Self { root: Node::Leaf(root_id), active: root_id, next_id: 1, focus_history: Vec::new() }
     }
 
     pub fn next_id(&mut self) -> PaneId {
@@ -71,6 +73,7 @@ impl Layout {
         let new_id = self.next_id();
         let target = self.active;
         split_node(&mut self.root, target, orientation, new_id, position);
+        self.focus_history.push(self.active);
         self.active = new_id;
         new_id
     }
@@ -86,14 +89,23 @@ impl Layout {
         if leaves.len() <= 1 {
             return false;
         }
-        let next_focus = leaves
-            .iter()
-            .find(|&&leaf| leaf != id)
-            .copied()
-            .unwrap_or(leaves[0]);
 
         if remove_leaf(&mut self.root, id) {
-            self.active = next_focus;
+            // Remove closed pane from focus history.
+            self.focus_history.retain(|&pid| pid != id);
+
+            if self.active == id {
+                let remaining: Vec<PaneId> = collect_leaves(&self.root);
+                // Pop the most recent still-alive pane from history.
+                let next = loop {
+                    match self.focus_history.pop() {
+                        Some(prev) if remaining.contains(&prev) => break prev,
+                        Some(_) => continue, // stale entry, skip
+                        None => break remaining[0], // fallback to first leaf
+                    }
+                };
+                self.active = next;
+            }
             return true;
         }
         false
@@ -110,6 +122,7 @@ impl Layout {
     pub fn focus_next(&mut self) {
         let leaves = collect_leaves(&self.root);
         if let Some(pos) = leaves.iter().position(|&id| id == self.active) {
+            self.focus_history.push(self.active);
             self.active = leaves[(pos + 1) % leaves.len()];
         }
     }
@@ -119,6 +132,7 @@ impl Layout {
         let leaves = collect_leaves(&self.root);
         if let Some(pos) = leaves.iter().position(|&id| id == self.active) {
             let len = leaves.len();
+            self.focus_history.push(self.active);
             self.active = leaves[(pos + len - 1) % len];
         }
     }
@@ -457,5 +471,46 @@ mod tests {
         assert_eq!(layout.active, ids[2]);
         layout.focus_next(); // wraps
         assert_eq!(layout.active, ids[0]);
+    }
+
+    // ── focus history ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn close_returns_to_previously_active_pane() {
+        let mut layout = Layout::new();
+        let _first = layout.active;           // pane 0
+        let second = layout.split(Orientation::Vertical); // pane 1, active
+        let third = layout.split(Orientation::Horizontal); // pane 2, active
+        // History: [0, 1], active: 2
+        // Focus to second, then close → should return to third (prev in history)
+        layout.focus_prev(); // go to 1 (history records 2)
+        assert_eq!(layout.active, second);
+        layout.close_active(); // close 1 → should go back to 2
+        assert_eq!(layout.active, third);
+    }
+
+    #[test]
+    fn close_skips_stale_history_entries() {
+        let mut layout = Layout::new();
+        let first = layout.active;           // pane 0
+        let second = layout.split(Orientation::Vertical); // pane 1
+        let third = layout.split(Orientation::Horizontal); // pane 2
+        // History: [0, 1], active: 2
+        // Close pane 2 → should go to pane 1
+        layout.close_active();
+        assert_eq!(layout.active, second);
+        // Close pane 1 → should go to pane 0 (pane 2 is stale in history)
+        layout.close_active();
+        assert_eq!(layout.active, first);
+    }
+
+    #[test]
+    fn split_then_close_returns_to_parent() {
+        let mut layout = Layout::new();
+        let original = layout.active;
+        let _new = layout.split(Orientation::Vertical);
+        // Close the new pane → should return to original
+        layout.close_active();
+        assert_eq!(layout.active, original);
     }
 }
