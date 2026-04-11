@@ -6,7 +6,7 @@ use crossterm::event::KeyEventKind;
 
 use crate::core::commands::Command;
 use crate::core::keymap::KeyMap;
-use crate::core::layout::{Layout, Orientation, PaneId};
+use crate::core::layout::{Layout, Orientation, PaneId, SplitPosition};
 use crate::platform::renderer::key_event_to_bytes;
 use crate::traits::{AppEvent, EventSource, PaneBackend, PaneFactory, Renderer};
 
@@ -17,6 +17,8 @@ pub struct App<B: PaneBackend> {
     keymap: KeyMap,
     terminal_size: (u16, u16),
     running: bool,
+    /// True when the prefix key has been pressed and we're awaiting the command key.
+    prefix_active: bool,
 }
 
 impl<B: PaneBackend> App<B> {
@@ -41,6 +43,7 @@ impl<B: PaneBackend> App<B> {
             keymap,
             terminal_size,
             running: true,
+            prefix_active: false,
         })
     }
 
@@ -61,9 +64,7 @@ impl<B: PaneBackend> App<B> {
                 Some(AppEvent::Resize(w, h)) => {
                     self.handle_resize(w, h);
                 }
-                Some(AppEvent::PaneData { .. }) => {
-                    // Term already updated by reader thread; re-render next iteration.
-                }
+                Some(AppEvent::PaneData { .. }) => {}
                 Some(AppEvent::PaneExit { pane_id }) => {
                     if self.panes.contains_key(&pane_id) {
                         self.close_pane(pane_id);
@@ -80,10 +81,22 @@ impl<B: PaneBackend> App<B> {
         key: crossterm::event::KeyEvent,
         factory: &F,
     ) -> Result<()> {
-        if let Some(cmd) = self.keymap.lookup(&key).cloned() {
-            self.dispatch(cmd, factory)?;
+        if self.prefix_active {
+            self.prefix_active = false;
+            if let Some(cmd) = self.keymap.lookup_prefix(&key).cloned() {
+                self.dispatch(cmd, factory)?;
+            }
+            // If no binding matched, the prefix sequence is consumed and discarded.
             return Ok(());
         }
+
+        // Check for prefix key.
+        if self.keymap.is_prefix(&key) {
+            self.prefix_active = true;
+            return Ok(());
+        }
+
+        // Forward raw bytes to the active pane.
         if let Some(bytes) = key_event_to_bytes(&key) {
             if let Some(pane) = self.panes.get_mut(&self.layout.active) {
                 pane.write_input(&bytes)?;
@@ -94,8 +107,12 @@ impl<B: PaneBackend> App<B> {
 
     fn dispatch<F: PaneFactory<B>>(&mut self, cmd: Command, factory: &F) -> Result<()> {
         match cmd {
-            Command::SplitVertical => self.split(Orientation::Vertical, factory)?,
-            Command::SplitHorizontal => self.split(Orientation::Horizontal, factory)?,
+            Command::SplitVertical => self.split(Orientation::Vertical, SplitPosition::After, factory)?,
+            Command::SplitHorizontal => self.split(Orientation::Horizontal, SplitPosition::After, factory)?,
+            Command::SplitLeft => self.split(Orientation::Vertical, SplitPosition::Before, factory)?,
+            Command::SplitRight => self.split(Orientation::Vertical, SplitPosition::After, factory)?,
+            Command::SplitUp => self.split(Orientation::Horizontal, SplitPosition::Before, factory)?,
+            Command::SplitDown => self.split(Orientation::Horizontal, SplitPosition::After, factory)?,
             Command::ClosePane => {
                 let id = self.layout.active;
                 self.close_pane(id);
@@ -107,9 +124,14 @@ impl<B: PaneBackend> App<B> {
         Ok(())
     }
 
-    fn split<F: PaneFactory<B>>(&mut self, orientation: Orientation, factory: &F) -> Result<()> {
+    fn split<F: PaneFactory<B>>(
+        &mut self,
+        orientation: Orientation,
+        position: SplitPosition,
+        factory: &F,
+    ) -> Result<()> {
         let (w, h) = self.terminal_size;
-        let new_id = self.layout.split(orientation);
+        let new_id = self.layout.split_with_position(orientation, position);
 
         let rects = self.layout.compute_rects(w, h);
         for (id, pane) in self.panes.iter_mut() {
@@ -168,6 +190,10 @@ impl<B: PaneBackend> App<B> {
 
     pub fn active_pane(&self) -> PaneId {
         self.layout.active
+    }
+
+    pub fn is_prefix_active(&self) -> bool {
+        self.prefix_active
     }
 
     /// Process a single event without a render step (useful for tests).

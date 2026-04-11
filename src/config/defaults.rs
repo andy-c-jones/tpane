@@ -2,24 +2,32 @@
 pub const DEFAULT_CONFIG: &str = r#"-- tpane configuration
 -- This file is Lua. You can map keys to built-in commands or custom functions.
 --
+-- Prefix key: Ctrl+B (press first, then the command key)
+--
 -- Built-in commands:
---   "split_vertical"   - split the active pane vertically (left | right)
---   "split_horizontal" - split the active pane horizontally (top / bottom)
---   "split"            - alias for split_vertical
+--   "split_left"       - split active pane, new pane on the left
+--   "split_right"      - split active pane, new pane on the right
+--   "split_up"         - split active pane, new pane above
+--   "split_down"       - split active pane, new pane below
+--   "split_vertical"   - split the active pane vertically (alias for split_right)
+--   "split_horizontal" - split the active pane horizontally (alias for split_down)
 --   "close"            - close the active pane
 --   "focus_next"       - move focus to next pane
 --   "focus_prev"       - move focus to previous pane
 --   "quit"             - exit tpane
 
--- Key bindings
--- Format: tpane.bind("<modifiers+key>", "<command>" | function)
-tpane.bind("ctrl+shift+t", "split_vertical")
-tpane.bind("ctrl+shift+v", "split_vertical")
-tpane.bind("ctrl+shift+h", "split_horizontal")
-tpane.bind("ctrl+shift+w", "close")
-tpane.bind("ctrl+shift+n", "focus_next")
-tpane.bind("ctrl+shift+p", "focus_prev")
-tpane.bind("ctrl+shift+q", "quit")
+-- Key bindings (applied after Ctrl+B prefix)
+-- Format: tpane.bind("<modifiers+key>", "<command>")
+tpane.bind("ctrl+left",  "split_left")
+tpane.bind("ctrl+right", "split_right")
+tpane.bind("ctrl+up",    "split_up")
+tpane.bind("ctrl+down",  "split_down")
+tpane.bind("left",  "focus_prev")
+tpane.bind("right", "focus_next")
+tpane.bind("up",    "focus_prev")
+tpane.bind("down",  "focus_next")
+tpane.bind("w", "close")
+tpane.bind("q", "quit")
 
 -- Startup layout (optional)
 -- By default tpane opens with a single pane.

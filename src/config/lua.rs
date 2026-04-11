@@ -151,16 +151,18 @@ mod tests {
     }
 
     #[test]
-    fn default_config_has_split_vertical_binding() {
+    fn default_config_has_split_right_binding() {
         let cfg = LuaConfig::load_from_source(DEFAULT_CONFIG).unwrap();
-        let cmd = cfg.keymap.lookup(&ctrl_shift('t'));
-        assert_eq!(cmd, Some(&Command::SplitVertical));
+        let event = crossterm::event::KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL);
+        let cmd = cfg.keymap.lookup_prefix(&event);
+        assert_eq!(cmd, Some(&Command::SplitRight));
     }
 
     #[test]
     fn default_config_has_close_pane_binding() {
         let cfg = LuaConfig::load_from_source(DEFAULT_CONFIG).unwrap();
-        let cmd = cfg.keymap.lookup(&ctrl_shift('w'));
+        let event = crossterm::event::KeyEvent::new(KeyCode::Char('w'), KeyModifiers::empty());
+        let cmd = cfg.keymap.lookup_prefix(&event);
         assert_eq!(cmd, Some(&Command::ClosePane));
     }
 
@@ -168,19 +170,19 @@ mod tests {
 
     #[test]
     fn custom_bind_overrides_default() {
-        let src = r#"tpane.bind("ctrl+shift+t", "quit")"#;
+        let src = r#"tpane.bind("w", "quit")"#;
         let cfg = LuaConfig::load_from_source(src).unwrap();
-        // Default KeyMap has ctrl+shift+t → SplitVertical; Lua override should change it.
-        let cmd = cfg.keymap.lookup(&ctrl_shift('t'));
+        let event = crossterm::event::KeyEvent::new(KeyCode::Char('w'), KeyModifiers::empty());
+        let cmd = cfg.keymap.lookup_prefix(&event);
         assert_eq!(cmd, Some(&Command::Quit));
     }
 
     #[test]
     fn valid_bind_adds_to_keymap() {
-        let src = r#"tpane.bind("ctrl+shift+x", "focus_next")"#;
+        let src = r#"tpane.bind("x", "focus_next")"#;
         let cfg = LuaConfig::load_from_source(src).unwrap();
-        let event = crossterm::event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-        assert_eq!(cfg.keymap.lookup(&event), Some(&Command::FocusNext));
+        let event = crossterm::event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty());
+        assert_eq!(cfg.keymap.lookup_prefix(&event), Some(&Command::FocusNext));
     }
 
     #[test]
@@ -201,12 +203,12 @@ mod tests {
     #[test]
     fn duplicate_bind_last_wins() {
         let src = r#"
-tpane.bind("ctrl+shift+d", "focus_next")
-tpane.bind("ctrl+shift+d", "focus_prev")
+tpane.bind("d", "focus_next")
+tpane.bind("d", "focus_prev")
 "#;
         let cfg = LuaConfig::load_from_source(src).unwrap();
-        let event = crossterm::event::KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-        assert_eq!(cfg.keymap.lookup(&event), Some(&Command::FocusPrev));
+        let event = crossterm::event::KeyEvent::new(KeyCode::Char('d'), KeyModifiers::empty());
+        assert_eq!(cfg.keymap.lookup_prefix(&event), Some(&Command::FocusPrev));
     }
 
     // ── on_startup ────────────────────────────────────────────────────────────

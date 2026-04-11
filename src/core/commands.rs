@@ -3,6 +3,14 @@
 pub enum Command {
     SplitVertical,
     SplitHorizontal,
+    /// Split vertical, new pane on left, focus moves to it.
+    SplitLeft,
+    /// Split vertical, new pane on right, focus moves to it.
+    SplitRight,
+    /// Split horizontal, new pane above, focus moves to it.
+    SplitUp,
+    /// Split horizontal, new pane below, focus moves to it.
+    SplitDown,
     ClosePane,
     FocusNext,
     FocusPrev,
@@ -16,6 +24,10 @@ impl Command {
             "split_vertical" => Some(Self::SplitVertical),
             "split_horizontal" => Some(Self::SplitHorizontal),
             "split" => Some(Self::SplitVertical), // alias
+            "split_left" => Some(Self::SplitLeft),
+            "split_right" => Some(Self::SplitRight),
+            "split_up" => Some(Self::SplitUp),
+            "split_down" => Some(Self::SplitDown),
             "close" | "close_pane" => Some(Self::ClosePane),
             "focus_next" => Some(Self::FocusNext),
             "focus_prev" => Some(Self::FocusPrev),
@@ -35,6 +47,10 @@ mod tests {
             ("split_vertical",   Command::SplitVertical),
             ("split_horizontal", Command::SplitHorizontal),
             ("split",            Command::SplitVertical),
+            ("split_left",       Command::SplitLeft),
+            ("split_right",      Command::SplitRight),
+            ("split_up",         Command::SplitUp),
+            ("split_down",       Command::SplitDown),
             ("close",            Command::ClosePane),
             ("close_pane",       Command::ClosePane),
             ("focus_next",       Command::FocusNext),

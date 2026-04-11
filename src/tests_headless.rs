@@ -5,7 +5,6 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     use crate::app::App;
-    use crate::core::commands::Command;
     use crate::core::keymap::KeyMap;
     use crate::core::layout::PaneId;
     use crate::headless::*;
@@ -30,8 +29,10 @@ mod tests {
         })
     }
 
-    fn ctrl_shift(c: char) -> AppEvent {
-        key_press(KeyCode::Char(c), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+    /// Helper: send prefix (Ctrl+B) then the command key.
+    fn prefix_then(app: &mut App<HeadlessPaneBackend>, factory: &HeadlessPaneFactory, code: KeyCode, mods: KeyModifiers) {
+        app.process_event(key_press(KeyCode::Char('b'), KeyModifiers::CONTROL), factory).unwrap();
+        app.process_event(key_press(code, mods), factory).unwrap();
     }
 
     // ── construction ──────────────────────────────────────────────────────────
@@ -50,48 +51,106 @@ mod tests {
         assert!(app.panes.contains_key(&id));
     }
 
-    // ── split vertical (ctrl+shift+t) ─────────────────────────────────────────
+    // ── prefix key mode ───────────────────────────────────────────────────────
 
     #[test]
-    fn split_vertical_creates_two_panes() {
+    fn ctrl_b_activates_prefix_mode() {
         let (mut app, factory) = default_app();
-        app.process_event(ctrl_shift('t'), &factory).unwrap();
+        assert!(!app.is_prefix_active());
+        app.process_event(key_press(KeyCode::Char('b'), KeyModifiers::CONTROL), &factory).unwrap();
+        assert!(app.is_prefix_active());
+    }
+
+    #[test]
+    fn prefix_mode_deactivates_after_command() {
+        let (mut app, factory) = default_app();
+        prefix_then(&mut app, &factory, KeyCode::Char('q'), KeyModifiers::empty());
+        assert!(!app.is_prefix_active());
+    }
+
+    #[test]
+    fn prefix_mode_deactivates_on_unknown_key() {
+        let (mut app, factory) = default_app();
+        app.process_event(key_press(KeyCode::Char('b'), KeyModifiers::CONTROL), &factory).unwrap();
+        assert!(app.is_prefix_active());
+        // Press an unbound key
+        app.process_event(key_press(KeyCode::Char('z'), KeyModifiers::empty()), &factory).unwrap();
+        assert!(!app.is_prefix_active());
+        assert!(app.is_running()); // should not quit or do anything
+    }
+
+    #[test]
+    fn regular_key_without_prefix_forwards_to_pane() {
+        let (mut app, factory) = default_app();
+        let active = app.active_pane();
+        // 'a' without prefix should forward to PTY
+        app.process_event(key_press(KeyCode::Char('a'), KeyModifiers::empty()), &factory).unwrap();
+        assert!(!app.panes[&active].input_log.is_empty());
+    }
+
+    #[test]
+    fn ctrl_b_itself_does_not_forward_to_pane() {
+        let (mut app, factory) = default_app();
+        let active = app.active_pane();
+        app.process_event(key_press(KeyCode::Char('b'), KeyModifiers::CONTROL), &factory).unwrap();
+        assert!(app.panes[&active].input_log.is_empty());
+    }
+
+    // ── directional splits (Ctrl+Arrow after prefix) ──────────────────────────
+
+    #[test]
+    fn split_right_creates_two_panes() {
+        let (mut app, factory) = default_app();
+        prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::CONTROL);
         assert_eq!(app.pane_count(), 2);
     }
 
     #[test]
-    fn split_vertical_changes_active_pane() {
+    fn split_left_creates_two_panes() {
+        let (mut app, factory) = default_app();
+        prefix_then(&mut app, &factory, KeyCode::Left, KeyModifiers::CONTROL);
+        assert_eq!(app.pane_count(), 2);
+    }
+
+    #[test]
+    fn split_down_creates_two_panes() {
+        let (mut app, factory) = default_app();
+        prefix_then(&mut app, &factory, KeyCode::Down, KeyModifiers::CONTROL);
+        assert_eq!(app.pane_count(), 2);
+    }
+
+    #[test]
+    fn split_up_creates_two_panes() {
+        let (mut app, factory) = default_app();
+        prefix_then(&mut app, &factory, KeyCode::Up, KeyModifiers::CONTROL);
+        assert_eq!(app.pane_count(), 2);
+    }
+
+    #[test]
+    fn split_changes_active_pane() {
         let (mut app, factory) = default_app();
         let original = app.active_pane();
-        app.process_event(ctrl_shift('t'), &factory).unwrap();
+        prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::CONTROL);
         assert_ne!(app.active_pane(), original);
     }
 
     #[test]
-    fn split_vertical_twice_creates_three_panes() {
+    fn multiple_splits_create_correct_count() {
         let (mut app, factory) = default_app();
-        app.process_event(ctrl_shift('t'), &factory).unwrap();
-        app.process_event(ctrl_shift('t'), &factory).unwrap();
-        assert_eq!(app.pane_count(), 3);
+        prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::CONTROL);
+        prefix_then(&mut app, &factory, KeyCode::Down, KeyModifiers::CONTROL);
+        prefix_then(&mut app, &factory, KeyCode::Left, KeyModifiers::CONTROL);
+        assert_eq!(app.pane_count(), 4);
     }
 
-    // ── split horizontal (ctrl+shift+h) ───────────────────────────────────────
-
-    #[test]
-    fn split_horizontal_creates_two_panes() {
-        let (mut app, factory) = default_app();
-        app.process_event(ctrl_shift('h'), &factory).unwrap();
-        assert_eq!(app.pane_count(), 2);
-    }
-
-    // ── close pane (ctrl+shift+w) ─────────────────────────────────────────────
+    // ── close pane (prefix + w) ───────────────────────────────────────────────
 
     #[test]
     fn close_pane_after_split_returns_to_one() {
         let (mut app, factory) = default_app();
-        app.process_event(ctrl_shift('t'), &factory).unwrap();
+        prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::CONTROL);
         assert_eq!(app.pane_count(), 2);
-        app.process_event(ctrl_shift('w'), &factory).unwrap();
+        prefix_then(&mut app, &factory, KeyCode::Char('w'), KeyModifiers::empty());
         assert_eq!(app.pane_count(), 1);
         assert!(app.is_running());
     }
@@ -99,7 +158,7 @@ mod tests {
     #[test]
     fn close_last_pane_quits() {
         let (mut app, factory) = default_app();
-        app.process_event(ctrl_shift('w'), &factory).unwrap();
+        prefix_then(&mut app, &factory, KeyCode::Char('w'), KeyModifiers::empty());
         assert!(!app.is_running());
     }
 
@@ -107,11 +166,10 @@ mod tests {
     fn close_pane_shifts_focus_to_remaining() {
         let (mut app, factory) = default_app();
         let first = app.active_pane();
-        app.process_event(ctrl_shift('t'), &factory).unwrap();
+        prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::CONTROL);
         let second = app.active_pane();
         assert_ne!(first, second);
-        // Close second (active) — focus should go to first
-        app.process_event(ctrl_shift('w'), &factory).unwrap();
+        prefix_then(&mut app, &factory, KeyCode::Char('w'), KeyModifiers::empty());
         assert_eq!(app.active_pane(), first);
     }
 
@@ -121,9 +179,8 @@ mod tests {
     fn pane_exit_event_removes_pane() {
         let (mut app, factory) = default_app();
         let first = app.active_pane();
-        app.process_event(ctrl_shift('t'), &factory).unwrap();
+        prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::CONTROL);
         assert_eq!(app.pane_count(), 2);
-        // Simulate the first pane's shell exiting
         app.process_event(AppEvent::PaneExit { pane_id: first }, &factory).unwrap();
         assert_eq!(app.pane_count(), 1);
         assert!(app.is_running());
@@ -133,7 +190,6 @@ mod tests {
     fn stale_pane_exit_event_is_ignored() {
         let (mut app, factory) = default_app();
         let bogus_id = PaneId(999);
-        // Should not panic or quit
         app.process_event(AppEvent::PaneExit { pane_id: bogus_id }, &factory).unwrap();
         assert_eq!(app.pane_count(), 1);
         assert!(app.is_running());
@@ -147,47 +203,47 @@ mod tests {
         assert!(!app.is_running());
     }
 
-    // ── focus (ctrl+shift+n / ctrl+shift+p) ──────────────────────────────────
+    // ── focus (prefix + Arrow) ───────────────────────────────────────────────
 
     #[test]
-    fn focus_next_cycles_through_panes() {
+    fn focus_right_cycles_through_panes() {
         let (mut app, factory) = default_app();
         let first = app.active_pane();
-        app.process_event(ctrl_shift('t'), &factory).unwrap();
+        prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::CONTROL);
         let second = app.active_pane();
 
-        // focus_next from second → first
-        app.process_event(ctrl_shift('n'), &factory).unwrap();
+        // focus right (next) from second → first (wraps)
+        prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::empty());
         assert_eq!(app.active_pane(), first);
 
-        // focus_next from first → second (wraps)
-        app.process_event(ctrl_shift('n'), &factory).unwrap();
+        // focus right again → second
+        prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::empty());
         assert_eq!(app.active_pane(), second);
     }
 
     #[test]
-    fn focus_prev_cycles_through_panes() {
+    fn focus_left_cycles_through_panes() {
         let (mut app, factory) = default_app();
         let first = app.active_pane();
-        app.process_event(ctrl_shift('t'), &factory).unwrap();
+        prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::CONTROL);
         let second = app.active_pane();
 
-        // focus_prev from second → first
-        app.process_event(ctrl_shift('p'), &factory).unwrap();
+        // focus left (prev) from second → first
+        prefix_then(&mut app, &factory, KeyCode::Left, KeyModifiers::empty());
         assert_eq!(app.active_pane(), first);
 
-        // focus_prev from first → second (wraps)
-        app.process_event(ctrl_shift('p'), &factory).unwrap();
+        // focus left from first → second (wraps)
+        prefix_then(&mut app, &factory, KeyCode::Left, KeyModifiers::empty());
         assert_eq!(app.active_pane(), second);
     }
 
-    // ── quit (ctrl+shift+q) ──────────────────────────────────────────────────
+    // ── quit (prefix + q) ────────────────────────────────────────────────────
 
     #[test]
     fn quit_command_stops_app() {
         let (mut app, factory) = default_app();
         assert!(app.is_running());
-        app.process_event(ctrl_shift('q'), &factory).unwrap();
+        prefix_then(&mut app, &factory, KeyCode::Char('q'), KeyModifiers::empty());
         assert!(!app.is_running());
     }
 
@@ -196,39 +252,23 @@ mod tests {
     #[test]
     fn resize_event_updates_pane_geometry() {
         let (mut app, factory) = default_app();
-        app.process_event(ctrl_shift('t'), &factory).unwrap();
+        prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::CONTROL);
         let pre_resizes: usize = app.panes.values().map(|p| p.resize_log.len()).sum();
 
         app.process_event(AppEvent::Resize(120, 40), &factory).unwrap();
 
         let post_resizes: usize = app.panes.values().map(|p| p.resize_log.len()).sum();
-        // Each pane should have received a resize
         assert!(post_resizes > pre_resizes);
     }
 
-    #[test]
-    fn resize_event_updates_stored_terminal_size() {
-        let (mut app, factory) = default_app();
-        app.process_event(AppEvent::Resize(120, 40), &factory).unwrap();
-        // After resize, a split should use the new terminal size for geometry.
-        // We verify indirectly: the pane's resize dimensions should reflect 120x40.
-        app.process_event(ctrl_shift('t'), &factory).unwrap();
-        // New pane should exist; it was spawned at the new terminal size
-        assert_eq!(app.pane_count(), 2);
-    }
-
-    // ── key forwarding to pane ────────────────────────────────────────────────
+    // ── key forwarding ────────────────────────────────────────────────────────
 
     #[test]
     fn regular_key_forwards_to_active_pane() {
         let (mut app, factory) = default_app();
         let active = app.active_pane();
-
-        // Press 'a' with no modifiers — should forward to PTY
         app.process_event(key_press(KeyCode::Char('a'), KeyModifiers::empty()), &factory).unwrap();
-
         let pane = &app.panes[&active];
-        assert!(!pane.input_log.is_empty(), "input should be forwarded");
         assert_eq!(pane.input_log[0], vec![b'a']);
     }
 
@@ -237,37 +277,32 @@ mod tests {
         let (mut app, factory) = default_app();
         let active = app.active_pane();
         app.process_event(key_press(KeyCode::Enter, KeyModifiers::empty()), &factory).unwrap();
-
         let pane = &app.panes[&active];
         assert_eq!(pane.input_log[0], vec![b'\r']);
     }
 
     #[test]
-    fn bound_key_does_not_forward_to_pane() {
+    fn bound_key_after_prefix_does_not_forward() {
         let (mut app, factory) = default_app();
         let active = app.active_pane();
-        // ctrl+shift+t is bound to split — should NOT forward bytes
-        app.process_event(ctrl_shift('t'), &factory).unwrap();
-
-        // The original pane should have received zero input
-        let pane = &app.panes[&active];
-        assert!(pane.input_log.is_empty(), "bound key should not be forwarded");
+        prefix_then(&mut app, &factory, KeyCode::Char('q'), KeyModifiers::empty());
+        // 'q' in prefix mode should quit, not forward bytes
+        assert!(app.panes[&active].input_log.is_empty());
     }
 
     #[test]
     fn key_after_focus_switch_goes_to_new_active() {
         let (mut app, factory) = default_app();
         let first = app.active_pane();
-        app.process_event(ctrl_shift('t'), &factory).unwrap();
+        prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::CONTROL);
         let second = app.active_pane();
 
-        // Switch focus to first
-        app.process_event(ctrl_shift('n'), &factory).unwrap();
+        // Switch focus back to first
+        prefix_then(&mut app, &factory, KeyCode::Left, KeyModifiers::empty());
         assert_eq!(app.active_pane(), first);
 
         // Type 'x' — should go to first pane, not second
         app.process_event(key_press(KeyCode::Char('x'), KeyModifiers::empty()), &factory).unwrap();
-
         assert!(!app.panes[&first].input_log.is_empty());
         assert!(app.panes[&second].input_log.is_empty());
     }
@@ -278,15 +313,18 @@ mod tests {
     fn run_processes_events_until_quit() {
         let (mut app, factory) = default_app();
         let mut events = HeadlessEventSource::new();
-        events.push(ctrl_shift('t'));  // split
-        events.push(ctrl_shift('q'));  // quit
+        // prefix + ctrl+right (split), then prefix + q (quit)
+        events.push(key_press(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        events.push(key_press(KeyCode::Right, KeyModifiers::CONTROL));
+        events.push(key_press(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        events.push(key_press(KeyCode::Char('q'), KeyModifiers::empty()));
 
         let mut renderer = HeadlessRenderer::new();
         app.run(&mut events, &mut renderer, &factory).unwrap();
 
         assert!(!app.is_running());
-        assert_eq!(app.pane_count(), 2); // split happened before quit
-        assert!(renderer.frame_count >= 2, "should have rendered at least 2 frames");
+        assert_eq!(app.pane_count(), 2);
+        assert!(renderer.frame_count >= 2);
     }
 
     #[test]
@@ -309,33 +347,30 @@ mod tests {
         let (mut app, factory) = default_app();
         // Split 3 times
         for _ in 0..3 {
-            app.process_event(ctrl_shift('t'), &factory).unwrap();
+            prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::CONTROL);
         }
         assert_eq!(app.pane_count(), 4);
 
         // Close 2
         for _ in 0..2 {
-            app.process_event(ctrl_shift('w'), &factory).unwrap();
+            prefix_then(&mut app, &factory, KeyCode::Char('w'), KeyModifiers::empty());
         }
         assert_eq!(app.pane_count(), 2);
 
         // Split again
-        app.process_event(ctrl_shift('t'), &factory).unwrap();
+        prefix_then(&mut app, &factory, KeyCode::Down, KeyModifiers::CONTROL);
         assert_eq!(app.pane_count(), 3);
         assert!(app.is_running());
-
-        // Layout leaf count matches pane count
         assert_eq!(app.layout.leaf_ids().len(), app.pane_count());
     }
 
     #[test]
-    fn mixed_vertical_horizontal_splits() {
+    fn mixed_directional_splits() {
         let (mut app, factory) = default_app();
-        // V, H, V, H
-        app.process_event(ctrl_shift('v'), &factory).unwrap();
-        app.process_event(ctrl_shift('h'), &factory).unwrap();
-        app.process_event(ctrl_shift('v'), &factory).unwrap();
-        app.process_event(ctrl_shift('h'), &factory).unwrap();
+        prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::CONTROL);
+        prefix_then(&mut app, &factory, KeyCode::Down, KeyModifiers::CONTROL);
+        prefix_then(&mut app, &factory, KeyCode::Left, KeyModifiers::CONTROL);
+        prefix_then(&mut app, &factory, KeyCode::Up, KeyModifiers::CONTROL);
         assert_eq!(app.pane_count(), 5);
         assert_eq!(app.layout.leaf_ids().len(), 5);
     }

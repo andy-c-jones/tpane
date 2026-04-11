@@ -76,38 +76,61 @@ fn parse_key_code(s: &str) -> Option<KeyCode> {
     }
 }
 
-/// Maps key chords to Commands.
+/// Maps key chords to Commands, with prefix key support.
 pub struct KeyMap {
-    bindings: HashMap<KeyChord, Command>,
+    /// The prefix key (e.g. Ctrl+B). When pressed, the next key is looked up
+    /// in `prefix_bindings` instead of being forwarded to the active pane.
+    pub prefix_key: KeyChord,
+    /// Bindings that activate after the prefix key.
+    prefix_bindings: HashMap<KeyChord, Command>,
 }
 
 impl KeyMap {
     pub fn new() -> Self {
-        Self { bindings: HashMap::new() }
+        Self {
+            prefix_key: KeyChord::parse("ctrl+b").unwrap(),
+            prefix_bindings: HashMap::new(),
+        }
     }
 
     pub fn bind(&mut self, chord: KeyChord, command: Command) {
-        self.bindings.insert(chord, command);
+        self.prefix_bindings.insert(chord, command);
     }
 
-    pub fn lookup(&self, event: &KeyEvent) -> Option<&Command> {
+    /// Check if a key event matches the prefix key.
+    pub fn is_prefix(&self, event: &KeyEvent) -> bool {
+        KeyChord::from_event(event) == self.prefix_key
+    }
+
+    /// Look up a command in the prefix bindings (called after prefix key).
+    pub fn lookup_prefix(&self, event: &KeyEvent) -> Option<&Command> {
         let chord = KeyChord::from_event(event);
-        self.bindings.get(&chord)
+        self.prefix_bindings.get(&chord)
+    }
+
+    /// Legacy lookup that checks prefix bindings directly (for tests).
+    pub fn lookup(&self, event: &KeyEvent) -> Option<&Command> {
+        self.lookup_prefix(event)
     }
 }
 
 impl Default for KeyMap {
     fn default() -> Self {
         let mut km = KeyMap::new();
-        // These defaults are overridable via main.lua.
         let defaults: &[(&str, Command)] = &[
-            ("ctrl+shift+t", Command::SplitVertical),
-            ("ctrl+shift+v", Command::SplitVertical),
-            ("ctrl+shift+h", Command::SplitHorizontal),
-            ("ctrl+shift+w", Command::ClosePane),
-            ("ctrl+shift+n", Command::FocusNext),
-            ("ctrl+shift+p", Command::FocusPrev),
-            ("ctrl+shift+q", Command::Quit),
+            // Directional splits: Ctrl+Arrow after prefix
+            ("ctrl+left",  Command::SplitLeft),
+            ("ctrl+right", Command::SplitRight),
+            ("ctrl+up",    Command::SplitUp),
+            ("ctrl+down",  Command::SplitDown),
+            // Focus movement: Arrow after prefix
+            ("left",  Command::FocusPrev),
+            ("right", Command::FocusNext),
+            ("up",    Command::FocusPrev),
+            ("down",  Command::FocusNext),
+            // Other commands
+            ("w", Command::ClosePane),
+            ("q", Command::Quit),
         ];
         for (chord_str, cmd) in defaults {
             if let Some(chord) = KeyChord::parse(chord_str) {
@@ -243,38 +266,40 @@ mod tests {
         assert_eq!(chord.code, KeyCode::Enter);
     }
 
-    // ── KeyMap::lookup ────────────────────────────────────────────────────────
+    // ── KeyMap prefix and lookup ────────────────────────────────────────────
 
     #[test]
-    fn lookup_hit_with_lowercase_event() {
+    fn prefix_key_is_ctrl_b_by_default() {
         let km = KeyMap::default();
-        let event = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-        assert_eq!(km.lookup(&event), Some(&Command::SplitVertical));
+        let event = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        assert!(km.is_prefix(&event));
     }
 
     #[test]
-    fn lookup_hit_with_uppercase_event() {
-        // Shift+T sends Char('T') in some terminals; should still match binding
+    fn non_prefix_key_is_not_prefix() {
         let km = KeyMap::default();
-        let event = KeyEvent::new(KeyCode::Char('T'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-        assert_eq!(km.lookup(&event), Some(&Command::SplitVertical));
+        let event = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty());
+        assert!(!km.is_prefix(&event));
     }
 
     #[test]
-    fn lookup_all_default_bindings() {
+    fn lookup_all_default_prefix_bindings() {
         let km = KeyMap::default();
         let cases: &[(KeyCode, KeyModifiers, Command)] = &[
-            (KeyCode::Char('t'), KeyModifiers::CONTROL | KeyModifiers::SHIFT, Command::SplitVertical),
-            (KeyCode::Char('v'), KeyModifiers::CONTROL | KeyModifiers::SHIFT, Command::SplitVertical),
-            (KeyCode::Char('h'), KeyModifiers::CONTROL | KeyModifiers::SHIFT, Command::SplitHorizontal),
-            (KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::SHIFT, Command::ClosePane),
-            (KeyCode::Char('n'), KeyModifiers::CONTROL | KeyModifiers::SHIFT, Command::FocusNext),
-            (KeyCode::Char('p'), KeyModifiers::CONTROL | KeyModifiers::SHIFT, Command::FocusPrev),
-            (KeyCode::Char('q'), KeyModifiers::CONTROL | KeyModifiers::SHIFT, Command::Quit),
+            (KeyCode::Left,  KeyModifiers::CONTROL, Command::SplitLeft),
+            (KeyCode::Right, KeyModifiers::CONTROL, Command::SplitRight),
+            (KeyCode::Up,    KeyModifiers::CONTROL, Command::SplitUp),
+            (KeyCode::Down,  KeyModifiers::CONTROL, Command::SplitDown),
+            (KeyCode::Left,  KeyModifiers::empty(),  Command::FocusPrev),
+            (KeyCode::Right, KeyModifiers::empty(),  Command::FocusNext),
+            (KeyCode::Up,    KeyModifiers::empty(),  Command::FocusPrev),
+            (KeyCode::Down,  KeyModifiers::empty(),  Command::FocusNext),
+            (KeyCode::Char('w'), KeyModifiers::empty(), Command::ClosePane),
+            (KeyCode::Char('q'), KeyModifiers::empty(), Command::Quit),
         ];
         for (code, mods, expected) in cases {
             let event = KeyEvent::new(*code, *mods);
-            assert_eq!(km.lookup(&event), Some(expected), "failed for {code:?}+{mods:?}");
+            assert_eq!(km.lookup_prefix(&event), Some(expected), "failed for {code:?}+{mods:?}");
         }
     }
 
@@ -282,15 +307,15 @@ mod tests {
     fn lookup_miss() {
         let km = KeyMap::default();
         let event = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::empty());
-        assert!(km.lookup(&event).is_none());
+        assert!(km.lookup_prefix(&event).is_none());
     }
 
     #[test]
     fn custom_bind_overrides_default() {
         let mut km = KeyMap::default();
-        let chord = KeyChord::parse("ctrl+shift+t").unwrap();
+        let chord = KeyChord::parse("w").unwrap();
         km.bind(chord, Command::Quit);
-        let event = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-        assert_eq!(km.lookup(&event), Some(&Command::Quit));
+        let event = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::empty());
+        assert_eq!(km.lookup_prefix(&event), Some(&Command::Quit));
     }
 }

@@ -35,23 +35,26 @@ On first run, tpane creates a default config at:
 
 ## Default Keybindings
 
-| Key | Action |
-|-----|--------|
-| `Ctrl+Shift+T` | Split vertical |
-| `Ctrl+Shift+V` | Split vertical |
-| `Ctrl+Shift+H` | Split horizontal |
-| `Ctrl+Shift+W` | Close pane |
-| `Ctrl+Shift+N` | Focus next pane |
-| `Ctrl+Shift+P` | Focus previous pane |
-| `Ctrl+Shift+Q` | Quit |
+tpane uses a **prefix key** system (like tmux). Press `Ctrl+B` first, then the command key:
+
+| After `Ctrl+B` | Action |
+|-----------------|--------|
+| `Ctrl+←` | Split left (new pane on the left) |
+| `Ctrl+→` | Split right (new pane on the right) |
+| `Ctrl+↑` | Split up (new pane above) |
+| `Ctrl+↓` | Split down (new pane below) |
+| `←` / `↑` | Focus previous pane |
+| `→` / `↓` | Focus next pane |
+| `w` | Close pane |
+| `q` | Quit |
 
 ## Configuration
 
-Edit `main.lua` to customize keybindings:
+Edit `main.lua` to customize keybindings (these are applied after the prefix key):
 
 ```lua
--- Remap split to Ctrl+Shift+S
-tpane.bind("ctrl+shift+s", "split_vertical")
+-- Remap close to 'x' (after Ctrl+B)
+tpane.bind("x", "close")
 
 -- Define a startup layout
 tpane.on_startup(function()
@@ -64,8 +67,12 @@ end)
 
 | Command | Description |
 |---------|-------------|
-| `split_vertical` | Split the active pane left/right |
-| `split_horizontal` | Split the active pane top/bottom |
+| `split_left` | Split active pane, new pane on the left |
+| `split_right` | Split active pane, new pane on the right |
+| `split_up` | Split active pane, new pane above |
+| `split_down` | Split active pane, new pane below |
+| `split_vertical` | Split the active pane left/right (alias for `split_right`) |
+| `split_horizontal` | Split the active pane top/bottom (alias for `split_down`) |
 | `split` | Alias for `split_vertical` |
 | `close` | Close the active pane |
 | `focus_next` | Move focus to the next pane |
@@ -84,7 +91,7 @@ Key names: `a`–`z`, `0`–`9`, `f1`–`f12`, `enter`, `space`, `tab`, `backspa
 # Build
 cargo build
 
-# Run tests (85 tests, ~78% coverage)
+# Run tests (91 tests, ~78% coverage)
 cargo test
 
 # Coverage report (requires cargo-llvm-cov)

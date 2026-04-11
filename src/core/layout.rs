@@ -33,6 +33,15 @@ pub struct Rect {
     pub height: u16,
 }
 
+/// Where the new pane is placed relative to the original.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitPosition {
+    /// New pane becomes the first child (left or above).
+    Before,
+    /// New pane becomes the second child (right or below).
+    After,
+}
+
 /// The full layout state.
 pub struct Layout {
     pub root: Node,
@@ -52,11 +61,16 @@ impl Layout {
         id
     }
 
-    /// Split the active pane, returning the new pane's ID.
+    /// Split the active pane (new pane goes after/right/below), returning the new pane's ID.
     pub fn split(&mut self, orientation: Orientation) -> PaneId {
+        self.split_with_position(orientation, SplitPosition::After)
+    }
+
+    /// Split the active pane with explicit positioning of the new pane.
+    pub fn split_with_position(&mut self, orientation: Orientation, position: SplitPosition) -> PaneId {
         let new_id = self.next_id();
         let target = self.active;
-        split_node(&mut self.root, target, orientation, new_id);
+        split_node(&mut self.root, target, orientation, new_id, position);
         self.active = new_id;
         new_id
     }
@@ -127,22 +141,27 @@ fn collect_leaves(node: &Node) -> Vec<PaneId> {
     }
 }
 
-fn split_node(node: &mut Node, target: PaneId, orientation: Orientation, new_id: PaneId) -> bool {
+fn split_node(node: &mut Node, target: PaneId, orientation: Orientation, new_id: PaneId, position: SplitPosition) -> bool {
     match node {
         Node::Leaf(id) if *id == target => {
             let old_leaf = Node::Leaf(*id);
+            let new_leaf = Node::Leaf(new_id);
+            let (first, second) = match position {
+                SplitPosition::Before => (new_leaf, old_leaf),
+                SplitPosition::After => (old_leaf, new_leaf),
+            };
             *node = Node::Split {
                 orientation,
                 ratio: 0.5,
-                first: Box::new(old_leaf),
-                second: Box::new(Node::Leaf(new_id)),
+                first: Box::new(first),
+                second: Box::new(second),
             };
             true
         }
         Node::Leaf(_) => false,
         Node::Split { first, second, .. } => {
-            split_node(first, target, orientation, new_id)
-                || split_node(second, target, orientation, new_id)
+            split_node(first, target, orientation, new_id, position)
+                || split_node(second, target, orientation, new_id, position)
         }
     }
 }
