@@ -58,6 +58,8 @@ pub struct PaneState {
     pub rows: u16,
     /// Pending resize to apply once PTY is ready.
     pending_resize: Arc<Mutex<Option<(u16, u16)>>>,
+    /// True once the PTY background spawn has completed and shell is connected.
+    ready: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl PaneState {
@@ -78,6 +80,7 @@ impl PaneState {
         let pty: Arc<Mutex<Option<PtyHandles>>> = Arc::new(Mutex::new(None));
         let input_buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
         let pending_resize: Arc<Mutex<Option<(u16, u16)>>> = Arc::new(Mutex::new(None));
+        let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         // Spawn PTY on a background thread so we don't block the render loop.
         {
@@ -85,8 +88,9 @@ impl PaneState {
             let pty_ref = pty.clone();
             let buf_ref = input_buffer.clone();
             let resize_ref = pending_resize.clone();
+            let ready_ref = ready.clone();
             thread::spawn(move || {
-                if let Err(e) = spawn_pty(id, cols, rows, event_tx, term_arc, pty_ref, buf_ref, resize_ref) {
+                if let Err(e) = spawn_pty(id, cols, rows, event_tx, term_arc, pty_ref, buf_ref, resize_ref, ready_ref) {
                     log::error!("Failed to spawn PTY for pane {:?}: {}", id, e);
                 }
             });
@@ -100,6 +104,7 @@ impl PaneState {
             cols,
             rows,
             pending_resize,
+            ready,
         })
     }
 
@@ -130,9 +135,12 @@ impl PaneState {
             *self.pending_resize.lock() = Some((cols, rows));
         }
     }
-}
 
-/// Background PTY spawn — does the heavy I/O work off the main thread.
+    /// Whether the PTY has finished spawning and the shell is connected.
+    pub fn is_ready(&self) -> bool {
+        self.ready.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
 fn spawn_pty(
     id: PaneId,
     cols: u16,
@@ -142,6 +150,7 @@ fn spawn_pty(
     pty_slot: Arc<Mutex<Option<PtyHandles>>>,
     input_buffer: Arc<Mutex<Vec<u8>>>,
     pending_resize: Arc<Mutex<Option<(u16, u16)>>>,
+    ready: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
     let pty_system = NativePtySystem::default();
     let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
@@ -174,6 +183,9 @@ fn spawn_pty(
         }
         *pty_slot.lock() = Some(handles);
     }
+
+    // Mark pane as ready — shell is connected.
+    ready.store(true, std::sync::atomic::Ordering::Release);
 
     // Notify the UI that content is available.
     let _ = event_tx.send(PaneEvent::Data { pane_id: id, bytes: Vec::new() });

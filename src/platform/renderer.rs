@@ -1,4 +1,5 @@
 use std::io::{self, Stdout};
+use std::time::Instant;
 
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::RenderableContent;
@@ -6,7 +7,7 @@ use alacritty_terminal::index::{Column, Line, Point};
 use anyhow::Result;
 use crossterm::event::{KeyEventKind};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::Rect as TuiRect;
+use ratatui::layout::{Alignment, Rect as TuiRect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line as TuiLine, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -16,6 +17,14 @@ use crate::core::layout::{Layout, PaneId};
 use crate::platform::pane::PaneState;
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
+
+/// Braille spinner frames — a smooth rotating dot pattern.
+const BRAILLE_SPINNER: &[char] = &[
+    '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏',
+];
+
+/// Start time used to derive animation frame from wall clock.
+static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
 /// Enter raw mode and alternate screen, return a ratatui Terminal.
 pub fn init_terminal() -> Result<Tui> {
@@ -84,9 +93,35 @@ pub fn render(
             frame.render_widget(block, tui_rect);
 
             if let Some(pane) = panes.get(pane_id) {
-                let content = term_to_text(pane, inner.width, inner.height);
-                let para = Paragraph::new(content);
-                frame.render_widget(para, inner);
+                if pane.is_ready() {
+                    let content = term_to_text(pane, inner.width, inner.height);
+                    let para = Paragraph::new(content);
+                    frame.render_widget(para, inner);
+                } else {
+                    // Braille loading throbber for panes still spawning.
+                    let start = START.get_or_init(Instant::now);
+                    let elapsed_ms = start.elapsed().as_millis() as usize;
+                    let frame_idx = (elapsed_ms / 80) % BRAILLE_SPINNER.len();
+                    let spinner = BRAILLE_SPINNER[frame_idx];
+
+                    let loading = TuiLine::from(vec![
+                        Span::styled(
+                            format!(" {} Loading shell…", spinner),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]);
+                    let para = Paragraph::new(Text::from(loading))
+                        .alignment(Alignment::Center);
+                    // Center vertically by rendering into a sub-rect.
+                    let center_y = inner.y + inner.height / 2;
+                    let center_rect = TuiRect {
+                        x: inner.x,
+                        y: center_y,
+                        width: inner.width,
+                        height: 1,
+                    };
+                    frame.render_widget(para, center_rect);
+                }
             }
         }
 
