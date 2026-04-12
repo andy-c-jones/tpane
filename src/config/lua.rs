@@ -62,6 +62,10 @@ impl LuaConfig {
 
     /// Load config from a raw Lua source string (used in tests and for future embedding).
     pub fn load_from_source(source: &str) -> Result<Self> {
+        // mlua 0.11: LuaError's inner source field is Arc<dyn Error> (no Send+Sync), so it no
+        // longer satisfies anyhow's From<E: Send+Sync> bound.  Convert explicitly via format.
+        fn lua_err(e: mlua::Error) -> anyhow::Error { anyhow::anyhow!("{e}") }
+
         let lua = Lua::new();
         let mut keymap = KeyMap::default();
 
@@ -73,7 +77,7 @@ impl LuaConfig {
         {
             let bindings_ref = bindings.clone();
 
-            let tpane_table = lua.create_table()?;
+            let tpane_table = lua.create_table().map_err(lua_err)?;
 
             // tpane.bind(chord, command_name)
             let bind_fn = {
@@ -81,19 +85,20 @@ impl LuaConfig {
                 lua.create_function(move |_, (chord, cmd): (String, String)| {
                     b.lock().push((chord, cmd));
                     Ok(())
-                })?
+                }).map_err(lua_err)?
             };
-            tpane_table.set("bind", bind_fn)?;
+            tpane_table.set("bind", bind_fn).map_err(lua_err)?;
 
             // tpane.on_startup(fn) — accepted but startup logic is deferred via __startup__ keys
             let on_startup_fn = {
                 lua.create_function(move |_, f: LuaFunction| {
                     // Call immediately so split helpers can record their commands
-                    let _ = f.call::<(), ()>(());
+                    // mlua 0.11: Function::call takes one generic arg (return type only)
+                    let _ = f.call::<()>(());
                     Ok(())
-                })?
+                }).map_err(lua_err)?
             };
-            tpane_table.set("on_startup", on_startup_fn)?;
+            tpane_table.set("on_startup", on_startup_fn).map_err(lua_err)?;
 
             // Expose split helpers for use inside on_startup.
             for name in &["split_vertical", "split_horizontal", "close", "focus_next", "focus_prev"] {
@@ -102,24 +107,25 @@ impl LuaConfig {
                 let stub = lua.create_function(move |_, ()| {
                     b.lock().push((format!("__startup__{}", n), String::new()));
                     Ok(())
-                })?;
-                tpane_table.set(n, stub)?;
+                }).map_err(lua_err)?;
+                tpane_table.set(n, stub).map_err(lua_err)?;
             }
 
             // Default settings (can be overridden by user Lua code).
-            tpane_table.set("show_cheatsheet", true)?;
+            tpane_table.set("show_cheatsheet", true).map_err(lua_err)?;
 
-            lua.globals().set("tpane", tpane_table)?;
+            lua.globals().set("tpane", tpane_table).map_err(lua_err)?;
         }
 
         // Execute the Lua source.
-        lua.load(source).set_name("main.lua").exec().map_err(anyhow::Error::from).context("executing lua source")?;
+        lua.load(source).set_name("main.lua").exec().map_err(lua_err).context("executing lua source")?;
 
         // Read back settings from the tpane table.
+        // mlua 0.11: Table::get takes one generic arg (value type only)
         let show_cheatsheet = lua.globals()
-            .get::<_, LuaTable>("tpane")
+            .get::<LuaTable>("tpane")
             .ok()
-            .and_then(|t| t.get::<_, bool>("show_cheatsheet").ok())
+            .and_then(|t| t.get::<bool>("show_cheatsheet").ok())
             .unwrap_or(true); // default: on
 
         // Apply collected bindings to the keymap; collect startup commands.
