@@ -322,9 +322,10 @@ pub fn key_event_to_bytes(event: &crossterm::event::KeyEvent) -> Option<Vec<u8>>
     if event.kind != KeyEventKind::Press {
         return None;
     }
+    let mods = event.modifiers;
     let bytes = match event.code {
         KeyCode::Char(c) => {
-            if event.modifiers.contains(KeyModifiers::CONTROL) {
+            if mods.contains(KeyModifiers::CONTROL) {
                 // Ctrl+letter → control byte
                 let b = c.to_ascii_lowercase() as u8;
                 if b >= b'a' && b <= b'z' {
@@ -339,17 +340,25 @@ pub fn key_event_to_bytes(event: &crossterm::event::KeyEvent) -> Option<Vec<u8>>
         }
         KeyCode::Enter => vec![b'\r'],
         KeyCode::Backspace => vec![0x7f],
-        KeyCode::Tab => vec![b'\t'],
+        KeyCode::Tab => {
+            if mods.contains(KeyModifiers::SHIFT) {
+                vec![0x1b, b'[', b'Z'] // Shift+Tab = CSI Z
+            } else {
+                vec![b'\t']
+            }
+        }
+        KeyCode::BackTab => vec![0x1b, b'[', b'Z'], // Shift+Tab
         KeyCode::Esc => vec![0x1b],
-        KeyCode::Up => vec![0x1b, b'[', b'A'],
-        KeyCode::Down => vec![0x1b, b'[', b'B'],
-        KeyCode::Right => vec![0x1b, b'[', b'C'],
-        KeyCode::Left => vec![0x1b, b'[', b'D'],
-        KeyCode::Home => vec![0x1b, b'[', b'H'],
-        KeyCode::End => vec![0x1b, b'[', b'F'],
-        KeyCode::Delete => vec![0x1b, b'[', b'3', b'~'],
-        KeyCode::PageUp => vec![0x1b, b'[', b'5', b'~'],
-        KeyCode::PageDown => vec![0x1b, b'[', b'6', b'~'],
+        KeyCode::Up    => csi_with_modifier(b'A', mods),
+        KeyCode::Down  => csi_with_modifier(b'B', mods),
+        KeyCode::Right => csi_with_modifier(b'C', mods),
+        KeyCode::Left  => csi_with_modifier(b'D', mods),
+        KeyCode::Home  => csi_with_modifier(b'H', mods),
+        KeyCode::End   => csi_with_modifier(b'F', mods),
+        KeyCode::Insert => vec![0x1b, b'[', b'2', b'~'],
+        KeyCode::Delete => tilde_with_modifier(3, mods),
+        KeyCode::PageUp => tilde_with_modifier(5, mods),
+        KeyCode::PageDown => tilde_with_modifier(6, mods),
         KeyCode::F(n) => {
             let bytes = f_key_bytes(n);
             if bytes.is_empty() { return None; }
@@ -358,6 +367,45 @@ pub fn key_event_to_bytes(event: &crossterm::event::KeyEvent) -> Option<Vec<u8>>
         _ => return None,
     };
     Some(bytes)
+}
+
+/// Encode CSI sequences with modifier parameter (e.g. \e[1;2A for Shift+Up).
+fn csi_with_modifier(code: u8, mods: crossterm::event::KeyModifiers) -> Vec<u8> {
+    let m = modifier_param(mods);
+    if m > 1 {
+        // \e[1;{mod}{code}
+        let ms = m.to_string();
+        let mut v = vec![0x1b, b'[', b'1', b';'];
+        v.extend_from_slice(ms.as_bytes());
+        v.push(code);
+        v
+    } else {
+        vec![0x1b, b'[', code]
+    }
+}
+
+/// Encode tilde sequences with modifier parameter (e.g. \e[3;2~ for Shift+Delete).
+fn tilde_with_modifier(n: u8, mods: crossterm::event::KeyModifiers) -> Vec<u8> {
+    let m = modifier_param(mods);
+    if m > 1 {
+        let ms = m.to_string();
+        let mut v = vec![0x1b, b'[', b'0' + n, b';'];
+        v.extend_from_slice(ms.as_bytes());
+        v.push(b'~');
+        v
+    } else {
+        vec![0x1b, b'[', b'0' + n, b'~']
+    }
+}
+
+/// xterm modifier parameter: 1 + (shift?1:0) + (alt?2:0) + (ctrl?4:0).
+fn modifier_param(mods: crossterm::event::KeyModifiers) -> u8 {
+    use crossterm::event::KeyModifiers;
+    let mut m: u8 = 1;
+    if mods.contains(KeyModifiers::SHIFT) { m += 1; }
+    if mods.contains(KeyModifiers::ALT)   { m += 2; }
+    if mods.contains(KeyModifiers::CONTROL) { m += 4; }
+    m
 }
 
 fn f_key_bytes(n: u8) -> Vec<u8> {
@@ -475,9 +523,9 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_key_returns_none() {
+    fn insert_key_returns_bytes() {
         let event = press(KeyCode::Insert, KeyModifiers::empty());
-        assert!(key_event_to_bytes(&event).is_none());
+        assert_eq!(key_event_to_bytes(&event), Some(vec![0x1b, b'[', b'2', b'~']));
     }
 
     // ── f_key_bytes ───────────────────────────────────────────────────────────
@@ -488,6 +536,42 @@ mod tests {
         assert!(!f_key_bytes(12).is_empty());
         assert!(f_key_bytes(0).is_empty());
         assert!(f_key_bytes(13).is_empty());
+    }
+
+    // ── BackTab / Shift+Tab ──────────────────────────────────────────────────
+
+    #[test]
+    fn backtab_returns_csi_z() {
+        let event = press(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(key_event_to_bytes(&event), Some(vec![0x1b, b'[', b'Z']));
+    }
+
+    #[test]
+    fn shift_tab_returns_csi_z() {
+        let event = press(KeyCode::Tab, KeyModifiers::SHIFT);
+        assert_eq!(key_event_to_bytes(&event), Some(vec![0x1b, b'[', b'Z']));
+    }
+
+    // ── modifier-aware arrow sequences ───────────────────────────────────────
+
+    #[test]
+    fn shift_up_returns_modified_csi() {
+        let event = press(KeyCode::Up, KeyModifiers::SHIFT);
+        // \e[1;2A
+        assert_eq!(key_event_to_bytes(&event), Some(vec![0x1b, b'[', b'1', b';', b'2', b'A']));
+    }
+
+    #[test]
+    fn ctrl_right_returns_modified_csi() {
+        let event = press(KeyCode::Right, KeyModifiers::CONTROL);
+        // \e[1;5C
+        assert_eq!(key_event_to_bytes(&event), Some(vec![0x1b, b'[', b'1', b';', b'5', b'C']));
+    }
+
+    #[test]
+    fn plain_arrow_no_modifier() {
+        let event = press(KeyCode::Left, KeyModifiers::empty());
+        assert_eq!(key_event_to_bytes(&event), Some(vec![0x1b, b'[', b'D']));
     }
 }
 

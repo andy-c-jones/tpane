@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, MouseEvent};
 
 use crate::core::layout::PaneId;
 
@@ -9,6 +9,7 @@ use crate::core::layout::PaneId;
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Resize(u16, u16),
     PaneData { pane_id: PaneId },
     PaneExit { pane_id: PaneId },

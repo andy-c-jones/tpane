@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::KeyEventKind;
+use crossterm::event::{KeyEventKind, MouseEventKind, MouseButton};
 
 use crate::core::commands::Command;
 use crate::core::keymap::KeyMap;
@@ -65,6 +65,9 @@ impl<B: PaneBackend> App<B> {
             match events.next_event(Duration::from_millis(16))? {
                 Some(AppEvent::Key(key)) if key.kind == KeyEventKind::Press => {
                     self.handle_key(key, factory)?;
+                }
+                Some(AppEvent::Mouse(mouse)) => {
+                    self.handle_mouse(mouse);
                 }
                 Some(AppEvent::Resize(w, h)) => {
                     self.handle_resize(w, h);
@@ -185,6 +188,29 @@ impl<B: PaneBackend> App<B> {
         }
     }
 
+    fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Click to focus: find which pane contains the click coordinates.
+                let (w, h) = self.terminal_size;
+                let cheatsheet_h = if self.prefix_active && self.show_cheatsheet { 3 } else { 0 };
+                let rects = self.layout.compute_rects(w, h.saturating_sub(cheatsheet_h));
+
+                for (pane_id, rect) in &rects {
+                    if mouse.column >= rect.x
+                        && mouse.column < rect.x + rect.width
+                        && mouse.row >= rect.y
+                        && mouse.row < rect.y + rect.height
+                    {
+                        self.layout.set_active(*pane_id);
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn is_running(&self) -> bool {
         self.running
     }
@@ -206,6 +232,9 @@ impl<B: PaneBackend> App<B> {
         match event {
             AppEvent::Key(key) if key.kind == KeyEventKind::Press => {
                 self.handle_key(key, factory)?;
+            }
+            AppEvent::Mouse(mouse) => {
+                self.handle_mouse(mouse);
             }
             AppEvent::Resize(w, h) => {
                 self.handle_resize(w, h);

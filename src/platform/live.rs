@@ -38,11 +38,14 @@ impl EventSource for LiveEventSource {
             Err(_) => {}
         }
 
-        // Poll crossterm for keyboard/resize.
+        // Poll crossterm for keyboard/mouse/resize.
         if event::poll(timeout)? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     return Ok(Some(AppEvent::Key(key)));
+                }
+                Event::Mouse(mouse) => {
+                    return Ok(Some(AppEvent::Mouse(mouse)));
                 }
                 Event::Resize(w, h) => {
                     return Ok(Some(AppEvent::Resize(w, h)));

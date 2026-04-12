@@ -140,6 +140,14 @@ impl Layout {
     pub fn leaf_ids(&self) -> Vec<PaneId> {
         collect_leaves(&self.root)
     }
+
+    /// Set the active pane, recording the current active in focus history.
+    pub fn set_active(&mut self, id: PaneId) {
+        if id != self.active {
+            self.focus_history.push(self.active);
+            self.active = id;
+        }
+    }
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────

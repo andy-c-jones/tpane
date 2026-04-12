@@ -2,7 +2,8 @@
 
 #[cfg(test)]
 mod tests {
-    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
+                           MouseEvent, MouseEventKind, MouseButton};
 
     use crate::app::App;
     use crate::core::keymap::KeyMap;
@@ -415,5 +416,38 @@ mod tests {
         let show_bar = app.is_prefix_active() && true;
         renderer.render(&app.layout, &app.panes, TERM_SIZE, show_bar).unwrap();
         assert!(!renderer.last_cheatsheet_visible);
+    }
+
+    // ── mouse click to focus ─────────────────────────────────────────────────
+
+    fn mouse_click(col: u16, row: u16) -> AppEvent {
+        AppEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::empty(),
+        })
+    }
+
+    #[test]
+    fn mouse_click_changes_active_pane() {
+        let (mut app, factory) = default_app();
+        // Split right → two panes side by side, new one is active (right half)
+        prefix_then(&mut app, &factory, KeyCode::Right, KeyModifiers::CONTROL);
+        assert_eq!(app.pane_count(), 2);
+        let right_pane = app.active_pane();
+
+        // Click in the left pane area (x=1, y=1 should be in the first pane)
+        app.process_event(mouse_click(1, 1), &factory).unwrap();
+        assert_ne!(app.active_pane(), right_pane);
+    }
+
+    #[test]
+    fn mouse_click_on_active_pane_is_noop() {
+        let (mut app, factory) = default_app();
+        let initial = app.active_pane();
+        // Click inside the only pane
+        app.process_event(mouse_click(5, 5), &factory).unwrap();
+        assert_eq!(app.active_pane(), initial);
     }
 }
