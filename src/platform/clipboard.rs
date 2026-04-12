@@ -21,6 +21,8 @@ impl Clipboard for SystemClipboard {
     }
 
     fn set_text(&mut self, text: &str) -> Result<()> {
-        self.inner.set_text(text.to_string()).context("writing to clipboard")
+        self.inner
+            .set_text(text.to_string())
+            .context("writing to clipboard")
     }
 }

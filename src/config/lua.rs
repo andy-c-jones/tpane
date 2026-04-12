@@ -10,9 +10,9 @@ use crate::core::keymap::{KeyChord, KeyMap};
 /// Resolved configuration after loading main.lua.
 pub struct LuaConfig {
     pub keymap: KeyMap,
-    /// Commands to run at startup (from tpane.on_startup).
-    #[allow(dead_code)]
-    pub startup_commands: Vec<Command>,
+    /// Commands to run at startup (from tpane.on_startup), each paired with an optional split ratio.
+    /// The ratio is the fraction of space the *active pane* keeps after the split (0.0–1.0).
+    pub startup_commands: Vec<(Command, Option<f64>)>,
     /// Show keybinding cheatsheet when prefix key is active.
     pub show_cheatsheet: bool,
     _lua: Lua,
@@ -55,8 +55,7 @@ impl LuaConfig {
     /// Load and evaluate main.lua, returning the resolved config.
     pub fn load() -> Result<Self> {
         Self::init_if_missing()?;
-        let source = std::fs::read_to_string(Self::config_file())
-            .context("reading main.lua")?;
+        let source = std::fs::read_to_string(Self::config_file()).context("reading main.lua")?;
         Self::load_from_source(&source)
     }
 
@@ -64,7 +63,9 @@ impl LuaConfig {
     pub fn load_from_source(source: &str) -> Result<Self> {
         // mlua 0.11: LuaError's inner source field is Arc<dyn Error> (no Send+Sync), so it no
         // longer satisfies anyhow's From<E: Send+Sync> bound.  Convert explicitly via format.
-        fn lua_err(e: mlua::Error) -> anyhow::Error { anyhow::anyhow!("{e}") }
+        fn lua_err(e: mlua::Error) -> anyhow::Error {
+            anyhow::anyhow!("{e}")
+        }
 
         let lua = Lua::new();
         let mut keymap = KeyMap::default();
@@ -85,9 +86,23 @@ impl LuaConfig {
                 lua.create_function(move |_, (chord, cmd): (String, String)| {
                     b.lock().push((chord, cmd));
                     Ok(())
-                }).map_err(lua_err)?
+                })
+                .map_err(lua_err)?
             };
             tpane_table.set("bind", bind_fn).map_err(lua_err)?;
+
+            // tpane.bind_direct(chord, command_name) — fires without the prefix key; holdable.
+            let bind_direct_fn = {
+                let b = bindings_ref.clone();
+                lua.create_function(move |_, (chord, cmd): (String, String)| {
+                    b.lock().push((format!("__direct__{}", chord), cmd));
+                    Ok(())
+                })
+                .map_err(lua_err)?
+            };
+            tpane_table
+                .set("bind_direct", bind_direct_fn)
+                .map_err(lua_err)?;
 
             // tpane.on_startup(fn) — accepted but startup logic is deferred via __startup__ keys
             let on_startup_fn = {
@@ -96,18 +111,37 @@ impl LuaConfig {
                     // mlua 0.11: Function::call takes one generic arg (return type only)
                     let _ = f.call::<()>(());
                     Ok(())
-                }).map_err(lua_err)?
+                })
+                .map_err(lua_err)?
             };
-            tpane_table.set("on_startup", on_startup_fn).map_err(lua_err)?;
+            tpane_table
+                .set("on_startup", on_startup_fn)
+                .map_err(lua_err)?;
 
             // Expose split helpers for use inside on_startup.
-            for name in &["split_vertical", "split_horizontal", "close", "focus_next", "focus_prev"] {
+            // Each accepts an optional ratio (0.05–0.95, clamped): fraction of space the current
+            // (active) pane keeps after the split. Omitting the argument uses 50/50.
+            for name in &[
+                "split_vertical",
+                "split_horizontal",
+                "split_left",
+                "split_right",
+                "split_up",
+                "split_down",
+                "close",
+                "focus_next",
+                "focus_prev",
+            ] {
                 let n = *name;
                 let b = bindings_ref.clone();
-                let stub = lua.create_function(move |_, ()| {
-                    b.lock().push((format!("__startup__{}", n), String::new()));
-                    Ok(())
-                }).map_err(lua_err)?;
+                let stub = lua
+                    .create_function(move |_, ratio: Option<f64>| {
+                        // Encode the optional ratio in the value field; empty string = no ratio.
+                        let ratio_str = ratio.map(|r| r.to_string()).unwrap_or_default();
+                        b.lock().push((format!("__startup__{}", n), ratio_str));
+                        Ok(())
+                    })
+                    .map_err(lua_err)?;
                 tpane_table.set(n, stub).map_err(lua_err)?;
             }
 
@@ -118,22 +152,49 @@ impl LuaConfig {
         }
 
         // Execute the Lua source.
-        lua.load(source).set_name("main.lua").exec().map_err(lua_err).context("executing lua source")?;
+        lua.load(source)
+            .set_name("main.lua")
+            .exec()
+            .map_err(lua_err)
+            .context("executing lua source")?;
 
         // Read back settings from the tpane table.
         // mlua 0.11: Table::get takes one generic arg (value type only)
-        let show_cheatsheet = lua.globals()
+        let show_cheatsheet = lua
+            .globals()
             .get::<LuaTable>("tpane")
             .ok()
             .and_then(|t| t.get::<bool>("show_cheatsheet").ok())
             .unwrap_or(true); // default: on
 
         // Apply collected bindings to the keymap; collect startup commands.
-        let mut startup_commands: Vec<Command> = Vec::new();
+        let mut startup_commands: Vec<(Command, Option<f64>)> = Vec::new();
         for (chord_str, cmd_name) in bindings.lock().iter() {
             if let Some(stripped) = chord_str.strip_prefix("__startup__") {
                 if let Some(cmd) = Command::from_name(stripped) {
-                    startup_commands.push(cmd);
+                    // cmd_name holds the encoded ratio string (empty = no ratio).
+                    let ratio = if cmd_name.is_empty() {
+                        None
+                    } else {
+                        cmd_name.parse::<f64>().ok()
+                    };
+                    startup_commands.push((cmd, ratio));
+                }
+            } else if let Some(stripped) = chord_str.strip_prefix("__direct__") {
+                if let Some(chord) = KeyChord::parse(stripped) {
+                    if let Some(cmd) = Command::from_name(cmd_name) {
+                        keymap.bind_direct(chord, cmd);
+                    } else {
+                        log::warn!(
+                            "Unknown command '{}' in main.lua bind_direct call",
+                            cmd_name
+                        );
+                    }
+                } else {
+                    log::warn!(
+                        "Could not parse key chord '{}' in main.lua bind_direct call",
+                        stripped
+                    );
                 }
             } else if let Some(chord) = KeyChord::parse(chord_str) {
                 if let Some(cmd) = Command::from_name(cmd_name) {
@@ -146,7 +207,12 @@ impl LuaConfig {
             }
         }
 
-        Ok(LuaConfig { keymap, startup_commands, show_cheatsheet, _lua: lua })
+        Ok(LuaConfig {
+            keymap,
+            startup_commands,
+            show_cheatsheet,
+            _lua: lua,
+        })
     }
 }
 
@@ -157,7 +223,10 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers};
 
     fn ctrl_shift(c: char) -> crossterm::event::KeyEvent {
-        crossterm::event::KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        crossterm::event::KeyEvent::new(
+            KeyCode::Char(c),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        )
     }
 
     // ── default config loads without errors ───────────────────────────────────
@@ -165,7 +234,10 @@ mod tests {
     #[test]
     fn default_config_loads_successfully() {
         let cfg = LuaConfig::load_from_source(DEFAULT_CONFIG).unwrap();
-        assert!(cfg.startup_commands.is_empty(), "default config should have no startup commands");
+        assert!(
+            cfg.startup_commands.is_empty(),
+            "default config should have no startup commands"
+        );
     }
 
     #[test]
@@ -240,7 +312,13 @@ tpane.on_startup(function()
 end)
 "#;
         let cfg = LuaConfig::load_from_source(src).unwrap();
-        assert_eq!(cfg.startup_commands, vec![Command::SplitVertical, Command::SplitHorizontal]);
+        assert_eq!(
+            cfg.startup_commands,
+            vec![
+                (Command::SplitVertical, None),
+                (Command::SplitHorizontal, None),
+            ]
+        );
     }
 
     #[test]
@@ -285,5 +363,129 @@ end)
         let cfg = LuaConfig::load_from_source("tpane.show_cheatsheet = false").unwrap();
         assert!(!cfg.show_cheatsheet);
     }
-}
 
+    // ── bind_direct ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn bind_direct_adds_direct_binding() {
+        let src = r#"tpane.bind_direct("alt+r", "resize_right")"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        let event = crossterm::event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT);
+        assert_eq!(
+            cfg.keymap.lookup_direct(&event),
+            Some(&Command::ResizeRight)
+        );
+    }
+
+    #[test]
+    fn bind_direct_does_not_add_prefix_binding() {
+        let src = r#"tpane.bind_direct("alt+r", "resize_right")"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        let event = crossterm::event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT);
+        assert!(cfg.keymap.lookup_prefix(&event).is_none());
+    }
+
+    #[test]
+    fn bind_direct_unknown_command_is_silently_ignored() {
+        let src = r#"tpane.bind_direct("alt+r", "not_a_command")"#;
+        let result = LuaConfig::load_from_source(src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn bind_direct_bad_chord_is_silently_ignored() {
+        let src = r#"tpane.bind_direct("not+a+chord", "resize_right")"#;
+        let result = LuaConfig::load_from_source(src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn default_config_has_resize_direct_bindings() {
+        let cfg = LuaConfig::load_from_source(DEFAULT_CONFIG).unwrap();
+        let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
+        let cases: &[(KeyCode, Command)] = &[
+            (KeyCode::Left, Command::ResizeLeft),
+            (KeyCode::Right, Command::ResizeRight),
+            (KeyCode::Up, Command::ResizeUp),
+            (KeyCode::Down, Command::ResizeDown),
+        ];
+        for (code, expected) in cases {
+            let event = crossterm::event::KeyEvent::new(*code, alt_shift);
+            assert_eq!(
+                cfg.keymap.lookup_direct(&event),
+                Some(expected),
+                "missing direct binding for {code:?}"
+            );
+        }
+    }
+
+    // ── on_startup with split_right / split_down ──────────────────────────────
+
+    #[test]
+    fn on_startup_split_right_records_command() {
+        let src = r#"
+tpane.on_startup(function()
+  tpane.split_right()
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        assert_eq!(cfg.startup_commands, vec![(Command::SplitRight, None)]);
+    }
+
+    #[test]
+    fn on_startup_split_down_records_command() {
+        let src = r#"
+tpane.on_startup(function()
+  tpane.split_down()
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        assert_eq!(cfg.startup_commands, vec![(Command::SplitDown, None)]);
+    }
+
+    // ── on_startup with explicit ratio ───────────────────────────────────────
+
+    #[test]
+    fn on_startup_split_right_with_ratio_records_ratio() {
+        let src = r#"
+tpane.on_startup(function()
+  tpane.split_right(0.3)
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        let (cmd, ratio) = &cfg.startup_commands[0];
+        assert_eq!(*cmd, Command::SplitRight);
+        assert!((ratio.unwrap() - 0.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn on_startup_split_down_with_ratio_records_ratio() {
+        let src = r#"
+tpane.on_startup(function()
+  tpane.split_down(0.6)
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        let (cmd, ratio) = &cfg.startup_commands[0];
+        assert_eq!(*cmd, Command::SplitDown);
+        assert!((ratio.unwrap() - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn on_startup_multiple_splits_with_mixed_ratios() {
+        let src = r#"
+tpane.on_startup(function()
+  tpane.split_right(0.7)
+  tpane.split_down()
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        assert_eq!(cfg.startup_commands.len(), 2);
+        let (cmd0, ratio0) = &cfg.startup_commands[0];
+        let (cmd1, ratio1) = &cfg.startup_commands[1];
+        assert_eq!(*cmd0, Command::SplitRight);
+        assert!((ratio0.unwrap() - 0.7).abs() < 1e-9);
+        assert_eq!(*cmd1, Command::SplitDown);
+        assert!(ratio1.is_none());
+    }
+}

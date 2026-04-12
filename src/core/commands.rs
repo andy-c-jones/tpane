@@ -18,6 +18,14 @@ pub enum Command {
     FocusRight,
     FocusUp,
     FocusDown,
+    /// Grow the active pane to the left (move its left edge leftward).
+    ResizeLeft,
+    /// Grow the active pane to the right (move its right edge rightward).
+    ResizeRight,
+    /// Grow the active pane upward (move its top edge upward).
+    ResizeUp,
+    /// Grow the active pane downward (move its bottom edge downward).
+    ResizeDown,
     Quit,
 }
 
@@ -39,6 +47,10 @@ impl Command {
             "focus_right" => Some(Self::FocusRight),
             "focus_up" => Some(Self::FocusUp),
             "focus_down" => Some(Self::FocusDown),
+            "resize_left" => Some(Self::ResizeLeft),
+            "resize_right" => Some(Self::ResizeRight),
+            "resize_up" => Some(Self::ResizeUp),
+            "resize_down" => Some(Self::ResizeDown),
             "quit" => Some(Self::Quit),
             _ => None,
         }
@@ -52,25 +64,33 @@ mod tests {
     #[test]
     fn all_named_commands_parse() {
         let cases = [
-            ("split_vertical",   Command::SplitVertical),
+            ("split_vertical", Command::SplitVertical),
             ("split_horizontal", Command::SplitHorizontal),
-            ("split",            Command::SplitVertical),
-            ("split_left",       Command::SplitLeft),
-            ("split_right",      Command::SplitRight),
-            ("split_up",         Command::SplitUp),
-            ("split_down",       Command::SplitDown),
-            ("close",            Command::ClosePane),
-            ("close_pane",       Command::ClosePane),
-            ("focus_next",       Command::FocusNext),
-            ("focus_prev",       Command::FocusPrev),
-            ("focus_left",       Command::FocusLeft),
-            ("focus_right",      Command::FocusRight),
-            ("focus_up",         Command::FocusUp),
-            ("focus_down",       Command::FocusDown),
-            ("quit",             Command::Quit),
+            ("split", Command::SplitVertical),
+            ("split_left", Command::SplitLeft),
+            ("split_right", Command::SplitRight),
+            ("split_up", Command::SplitUp),
+            ("split_down", Command::SplitDown),
+            ("close", Command::ClosePane),
+            ("close_pane", Command::ClosePane),
+            ("focus_next", Command::FocusNext),
+            ("focus_prev", Command::FocusPrev),
+            ("focus_left", Command::FocusLeft),
+            ("focus_right", Command::FocusRight),
+            ("focus_up", Command::FocusUp),
+            ("focus_down", Command::FocusDown),
+            ("resize_left", Command::ResizeLeft),
+            ("resize_right", Command::ResizeRight),
+            ("resize_up", Command::ResizeUp),
+            ("resize_down", Command::ResizeDown),
+            ("quit", Command::Quit),
         ];
         for (name, expected) in cases {
-            assert_eq!(Command::from_name(name), Some(expected), "failed for '{name}'");
+            assert_eq!(
+                Command::from_name(name),
+                Some(expected),
+                "failed for '{name}'"
+            );
         }
     }
 

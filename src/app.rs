@@ -2,14 +2,28 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{KeyEventKind, MouseEventKind, MouseButton, KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 
 use crate::core::commands::Command;
 use crate::core::keymap::KeyMap;
-use crate::core::layout::{Direction, Layout, Orientation, PaneId, SplitPosition};
+use crate::core::layout::{Direction, DividerInfo, Layout, Orientation, PaneId, SplitPosition};
 use crate::core::selection::Selection;
-use crate::platform::renderer::{key_event_to_bytes, cheatsheet_bar_height};
+use crate::platform::renderer::{cheatsheet_bar_height, key_event_to_bytes};
 use crate::traits::{AppEvent, Clipboard, EventSource, PaneBackend, PaneFactory, Renderer};
+
+/// How much the ratio changes per resize step (approx 2% of total size).
+const RESIZE_STEP: f64 = 0.02;
+
+/// State for an ongoing divider drag (mouse-driven resize).
+struct DividerDrag {
+    first_pane: PaneId,
+    second_pane: PaneId,
+    orientation: Orientation,
+    /// Start of the split rect along the split axis (x for Vertical, y for Horizontal).
+    rect_start: u16,
+    /// Total size of the split rect along the split axis.
+    rect_size: u16,
+}
 
 /// Central application state, generic over the pane backend.
 pub struct App<B: PaneBackend> {
@@ -28,6 +42,8 @@ pub struct App<B: PaneBackend> {
     drag_origin: Option<(u16, u16)>,
     /// Whether we're actively dragging (mouse moved since button down).
     dragging: bool,
+    /// Active divider drag for mouse-driven pane resize.
+    resize_drag: Option<DividerDrag>,
 }
 
 impl<B: PaneBackend> App<B> {
@@ -58,6 +74,7 @@ impl<B: PaneBackend> App<B> {
             selection: None,
             drag_origin: None,
             dragging: false,
+            resize_drag: None,
         })
     }
 
@@ -71,11 +88,23 @@ impl<B: PaneBackend> App<B> {
     ) -> Result<()> {
         while self.running {
             let show_bar = self.prefix_active && self.show_cheatsheet;
-            renderer.render(&self.layout, &self.panes, self.terminal_size, show_bar, self.selection.as_ref())?;
+            renderer.render(
+                &self.layout,
+                &self.panes,
+                &self.keymap,
+                self.terminal_size,
+                show_bar,
+                self.selection.as_ref(),
+            )?;
 
             match events.next_event(Duration::from_millis(16))? {
                 Some(AppEvent::Key(key)) if key.kind == KeyEventKind::Press => {
                     self.handle_key(key, factory, clipboard)?;
+                }
+                // Repeat events are only forwarded to direct bindings and raw PTY input;
+                // prefix-key and global-shortcut handling is guarded inside handle_key.
+                Some(AppEvent::Key(key)) if key.kind == KeyEventKind::Repeat => {
+                    self.handle_key_repeat(key, factory)?;
                 }
                 Some(AppEvent::Mouse(mouse)) => {
                     self.handle_mouse(mouse, clipboard);
@@ -120,7 +149,35 @@ impl<B: PaneBackend> App<B> {
             return Ok(());
         }
 
+        // Check direct bindings (holdable; work without prefix key).
+        if let Some(cmd) = self.keymap.lookup_direct(&key).cloned() {
+            self.dispatch(cmd, factory)?;
+            return Ok(());
+        }
+
         // Forward raw bytes to the active pane.
+        if let Some(bytes) = key_event_to_bytes(&key) {
+            if let Some(pane) = self.panes.get_mut(&self.layout.active) {
+                pane.write_input(&bytes)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle key-repeat events: only direct bindings and raw PTY forwarding fire on repeat.
+    /// Prefix-key logic and global shortcuts are intentionally excluded.
+    fn handle_key_repeat<F: PaneFactory<B>>(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        factory: &F,
+    ) -> Result<()> {
+        // Direct bindings fire on repeat so they can be held to move edges continuously.
+        if let Some(cmd) = self.keymap.lookup_direct(&key).cloned() {
+            self.dispatch(cmd, factory)?;
+            return Ok(());
+        }
+
+        // Forward raw bytes to the active pane (e.g. holding a character key).
         if let Some(bytes) = key_event_to_bytes(&key) {
             if let Some(pane) = self.panes.get_mut(&self.layout.active) {
                 pane.write_input(&bytes)?;
@@ -189,22 +246,77 @@ impl<B: PaneBackend> App<B> {
 
     fn dispatch<F: PaneFactory<B>>(&mut self, cmd: Command, factory: &F) -> Result<()> {
         match cmd {
-            Command::SplitVertical => self.split(Orientation::Vertical, SplitPosition::After, factory)?,
-            Command::SplitHorizontal => self.split(Orientation::Horizontal, SplitPosition::After, factory)?,
-            Command::SplitLeft => self.split(Orientation::Vertical, SplitPosition::Before, factory)?,
-            Command::SplitRight => self.split(Orientation::Vertical, SplitPosition::After, factory)?,
-            Command::SplitUp => self.split(Orientation::Horizontal, SplitPosition::Before, factory)?,
-            Command::SplitDown => self.split(Orientation::Horizontal, SplitPosition::After, factory)?,
+            Command::SplitVertical => {
+                self.split(Orientation::Vertical, SplitPosition::After, None, factory)?
+            }
+            Command::SplitHorizontal => {
+                self.split(Orientation::Horizontal, SplitPosition::After, None, factory)?
+            }
+            Command::SplitLeft => {
+                self.split(Orientation::Vertical, SplitPosition::Before, None, factory)?
+            }
+            Command::SplitRight => {
+                self.split(Orientation::Vertical, SplitPosition::After, None, factory)?
+            }
+            Command::SplitUp => self.split(
+                Orientation::Horizontal,
+                SplitPosition::Before,
+                None,
+                factory,
+            )?,
+            Command::SplitDown => {
+                self.split(Orientation::Horizontal, SplitPosition::After, None, factory)?
+            }
             Command::ClosePane => {
                 let id = self.layout.active;
                 self.close_pane(id);
             }
             Command::FocusNext => self.layout.focus_next(),
             Command::FocusPrev => self.layout.focus_prev(),
-            Command::FocusLeft => self.layout.focus_direction(Direction::Left, self.terminal_size),
-            Command::FocusRight => self.layout.focus_direction(Direction::Right, self.terminal_size),
-            Command::FocusUp => self.layout.focus_direction(Direction::Up, self.terminal_size),
-            Command::FocusDown => self.layout.focus_direction(Direction::Down, self.terminal_size),
+            Command::FocusLeft => self
+                .layout
+                .focus_direction(Direction::Left, self.terminal_size),
+            Command::FocusRight => self
+                .layout
+                .focus_direction(Direction::Right, self.terminal_size),
+            Command::FocusUp => self
+                .layout
+                .focus_direction(Direction::Up, self.terminal_size),
+            Command::FocusDown => self
+                .layout
+                .focus_direction(Direction::Down, self.terminal_size),
+            Command::ResizeLeft => {
+                self.layout.adjust_pane_ratio(
+                    self.layout.active,
+                    Orientation::Vertical,
+                    -RESIZE_STEP,
+                );
+                self.refresh_pane_sizes();
+            }
+            Command::ResizeRight => {
+                self.layout.adjust_pane_ratio(
+                    self.layout.active,
+                    Orientation::Vertical,
+                    RESIZE_STEP,
+                );
+                self.refresh_pane_sizes();
+            }
+            Command::ResizeUp => {
+                self.layout.adjust_pane_ratio(
+                    self.layout.active,
+                    Orientation::Horizontal,
+                    -RESIZE_STEP,
+                );
+                self.refresh_pane_sizes();
+            }
+            Command::ResizeDown => {
+                self.layout.adjust_pane_ratio(
+                    self.layout.active,
+                    Orientation::Horizontal,
+                    RESIZE_STEP,
+                );
+                self.refresh_pane_sizes();
+            }
             Command::Quit => self.running = false,
         }
         Ok(())
@@ -214,11 +326,33 @@ impl<B: PaneBackend> App<B> {
         &mut self,
         orientation: Orientation,
         position: SplitPosition,
+        initial_ratio: Option<f64>,
         factory: &F,
     ) -> Result<()> {
         self.selection = None;
         let (w, h) = self.terminal_size;
-        let new_id = self.layout.split_with_position(orientation, position);
+
+        // `initial_ratio` is the fraction of space that the **active (original) pane** keeps
+        // after the split. When position is After (e.g. split_right), the original becomes the
+        // first child so internal_ratio == initial_ratio. When position is Before (e.g.
+        // split_left), the original becomes the second child so we invert the fraction.
+        //
+        // The user-provided ratio is clamped to [0.05, 0.95] *before* inversion so that
+        // the original pane always receives the requested proportion (e.g. 0.98 is clamped to
+        // 0.95, meaning the original keeps 95% and the new pane gets 5%, regardless of
+        // SplitPosition).
+        let new_id = match initial_ratio {
+            Some(ratio) => {
+                let clamped = ratio.clamp(0.05, 0.95);
+                let internal_ratio = match position {
+                    SplitPosition::After => clamped,
+                    SplitPosition::Before => 1.0 - clamped,
+                };
+                self.layout
+                    .split_with_position_and_ratio(orientation, position, internal_ratio)
+            }
+            None => self.layout.split_with_position(orientation, position),
+        };
 
         let rects = self.layout.compute_rects(w, h);
         for (id, pane) in self.panes.iter_mut() {
@@ -249,7 +383,61 @@ impl<B: PaneBackend> App<B> {
             return;
         }
         self.panes.remove(&id);
+        self.refresh_pane_sizes();
+    }
 
+    /// Run startup layout commands (from `tpane.on_startup { ... }` in main.lua).
+    /// Each command may carry an optional split ratio; non-split commands ignore the ratio.
+    ///
+    /// The `ratio` for split commands is the fraction of space that the **currently active pane
+    /// keeps** after the split — e.g. `split_right(0.7)` leaves the original pane at 70% and
+    /// the new right pane at 30%.  The value is clamped to [0.05, 0.95].  `None` uses the
+    /// default 50/50 split.
+    pub fn apply_startup_commands<F: PaneFactory<B>>(
+        &mut self,
+        cmds: &[(Command, Option<f64>)],
+        factory: &F,
+    ) -> Result<()> {
+        for (cmd, ratio) in cmds {
+            match cmd {
+                Command::SplitVertical => {
+                    self.split(Orientation::Vertical, SplitPosition::After, *ratio, factory)?
+                }
+                Command::SplitHorizontal => self.split(
+                    Orientation::Horizontal,
+                    SplitPosition::After,
+                    *ratio,
+                    factory,
+                )?,
+                Command::SplitLeft => self.split(
+                    Orientation::Vertical,
+                    SplitPosition::Before,
+                    *ratio,
+                    factory,
+                )?,
+                Command::SplitRight => {
+                    self.split(Orientation::Vertical, SplitPosition::After, *ratio, factory)?
+                }
+                Command::SplitUp => self.split(
+                    Orientation::Horizontal,
+                    SplitPosition::Before,
+                    *ratio,
+                    factory,
+                )?,
+                Command::SplitDown => self.split(
+                    Orientation::Horizontal,
+                    SplitPosition::After,
+                    *ratio,
+                    factory,
+                )?,
+                other => self.dispatch(other.clone(), factory)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Recompute pane geometry and notify all backends of their new size.
+    fn refresh_pane_sizes(&mut self) {
         let (w, h) = self.terminal_size;
         let rects = self.layout.compute_rects(w, h);
         for (pid, pane) in self.panes.iter_mut() {
@@ -264,30 +452,38 @@ impl<B: PaneBackend> App<B> {
     fn handle_resize(&mut self, w: u16, h: u16) {
         self.selection = None;
         self.terminal_size = (w, h);
-        let rects = self.layout.compute_rects(w, h);
-        for (id, pane) in self.panes.iter_mut() {
-            if let Some(rect) = rects.get(id) {
-                let inner_w = rect.width.saturating_sub(2).max(4);
-                let inner_h = rect.height.saturating_sub(2).max(2);
-                pane.resize(inner_w, inner_h);
-            }
-        }
+        self.refresh_pane_sizes();
     }
 
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent, clipboard: &mut dyn Clipboard) {
         let (w, h) = self.terminal_size;
         let cheatsheet_h = if self.prefix_active && self.show_cheatsheet {
-            cheatsheet_bar_height(w)
+            cheatsheet_bar_height(w, &self.keymap)
         } else {
             0
         };
-        let rects = self.layout.compute_rects(w, h.saturating_sub(cheatsheet_h));
+        let pane_area_h = h.saturating_sub(cheatsheet_h);
+        let rects = self.layout.compute_rects(w, pane_area_h);
+        let dividers = self.layout.compute_dividers(w, pane_area_h);
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 // Clear any previous selection.
                 self.selection = None;
                 self.dragging = false;
+                self.resize_drag = None;
+
+                // Check if the click lands on a divider first.
+                if let Some(div) = Self::find_divider_at(&dividers, mouse.column, mouse.row) {
+                    self.resize_drag = Some(DividerDrag {
+                        first_pane: div.first_pane,
+                        second_pane: div.second_pane,
+                        orientation: div.orientation,
+                        rect_start: div.rect_start,
+                        rect_size: div.rect_size,
+                    });
+                    return;
+                }
 
                 // Find which pane was clicked.
                 if let Some((pane_id, rect)) = Self::find_pane_at(&rects, mouse.column, mouse.row) {
@@ -317,6 +513,26 @@ impl<B: PaneBackend> App<B> {
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
+                // Divider drag: update the split ratio.
+                if let Some(ref drag) = self.resize_drag {
+                    if drag.rect_size > 0 {
+                        let new_ratio = match drag.orientation {
+                            Orientation::Vertical => {
+                                (mouse.column.saturating_sub(drag.rect_start)) as f64
+                                    / drag.rect_size as f64
+                            }
+                            Orientation::Horizontal => {
+                                (mouse.row.saturating_sub(drag.rect_start)) as f64
+                                    / drag.rect_size as f64
+                            }
+                        };
+                        let (fp, sp) = (drag.first_pane, drag.second_pane);
+                        self.layout.set_split_ratio(fp, sp, new_ratio);
+                        self.refresh_pane_sizes();
+                    }
+                    return;
+                }
+
                 self.dragging = true;
                 if let Some(ref mut sel) = self.selection {
                     if let Some(rect) = rects.get(&sel.pane_id) {
@@ -333,6 +549,11 @@ impl<B: PaneBackend> App<B> {
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
+                // Finish divider drag.
+                if self.resize_drag.is_some() {
+                    self.resize_drag = None;
+                    return;
+                }
                 // If no drag happened (just a click), clear the selection.
                 if !self.dragging {
                     self.selection = None;
@@ -356,6 +577,24 @@ impl<B: PaneBackend> App<B> {
         }
     }
 
+    /// Find the divider at the given screen coordinates, if any.
+    fn find_divider_at(dividers: &[DividerInfo], col: u16, row: u16) -> Option<DividerInfo> {
+        for div in dividers {
+            let hit = match div.orientation {
+                Orientation::Vertical => {
+                    col == div.position && row >= div.span_start && row < div.span_end
+                }
+                Orientation::Horizontal => {
+                    row == div.position && col >= div.span_start && col < div.span_end
+                }
+            };
+            if hit {
+                return Some(*div);
+            }
+        }
+        None
+    }
+
     /// Find which pane contains the given screen coordinates.
     fn find_pane_at(
         rects: &HashMap<PaneId, crate::core::layout::Rect>,
@@ -363,8 +602,10 @@ impl<B: PaneBackend> App<B> {
         row: u16,
     ) -> Option<(PaneId, crate::core::layout::Rect)> {
         for (pane_id, rect) in rects {
-            if col >= rect.x && col < rect.x + rect.width
-                && row >= rect.y && row < rect.y + rect.height
+            if col >= rect.x
+                && col < rect.x + rect.width
+                && row >= rect.y
+                && row < rect.y + rect.height
             {
                 return Some((*pane_id, *rect));
             }
@@ -403,6 +644,9 @@ impl<B: PaneBackend> App<B> {
         match event {
             AppEvent::Key(key) if key.kind == KeyEventKind::Press => {
                 self.handle_key(key, factory, clipboard)?;
+            }
+            AppEvent::Key(key) if key.kind == KeyEventKind::Repeat => {
+                self.handle_key_repeat(key, factory)?;
             }
             AppEvent::Mouse(mouse) => {
                 self.handle_mouse(mouse, clipboard);

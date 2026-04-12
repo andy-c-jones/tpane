@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::thread;
 
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
@@ -16,8 +16,14 @@ use crate::core::layout::PaneId;
 
 #[derive(Debug)]
 pub enum PaneEvent {
-    Data { pane_id: PaneId, #[allow(dead_code)] bytes: Vec<u8> },
-    Exit { pane_id: PaneId },
+    Data {
+        pane_id: PaneId,
+        #[allow(dead_code)]
+        bytes: Vec<u8>,
+    },
+    Exit {
+        pane_id: PaneId,
+    },
 }
 
 // ── EventListener implementation for alacritty Term ──────────────────────────
@@ -86,14 +92,20 @@ impl PaneState {
         event_tx: mpsc::Sender<PaneEvent>,
     ) -> Result<Self> {
         // Create the alacritty Term immediately (cheap, no I/O).
-        let term_config = TermConfig { kitty_keyboard: true, ..TermConfig::default() };
+        let term_config = TermConfig {
+            kitty_keyboard: true,
+            ..TermConfig::default()
+        };
         let title: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
         let listener = TpaneEventListener {
             sender: event_tx.clone(),
             pane_id: id,
             title: title.clone(),
         };
-        let term_size = TermSize { cols: cols as usize, rows: rows as usize };
+        let term_size = TermSize {
+            cols: cols as usize,
+            rows: rows as usize,
+        };
         let term = Arc::new(FairMutex::new(Term::new(term_config, &term_size, listener)));
 
         let pty: Arc<Mutex<Option<PtyHandles>>> = Arc::new(Mutex::new(None));
@@ -109,7 +121,9 @@ impl PaneState {
             let resize_ref = pending_resize.clone();
             let ready_ref = ready.clone();
             thread::spawn(move || {
-                if let Err(e) = spawn_pty(id, cols, rows, event_tx, term_arc, pty_ref, buf_ref, resize_ref, ready_ref) {
+                if let Err(e) = spawn_pty(
+                    id, cols, rows, event_tx, term_arc, pty_ref, buf_ref, resize_ref, ready_ref,
+                ) {
                     log::error!("Failed to spawn PTY for pane {:?}: {}", id, e);
                 }
             });
@@ -144,12 +158,20 @@ impl PaneState {
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.cols = cols;
         self.rows = rows;
-        let term_size = TermSize { cols: cols as usize, rows: rows as usize };
+        let term_size = TermSize {
+            cols: cols as usize,
+            rows: rows as usize,
+        };
         self.term.lock().resize(term_size);
 
         let mut pty_guard = self.pty.lock();
         if let Some(ref mut handles) = *pty_guard {
-            let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
+            let size = PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            };
             let _ = handles.master.resize(size);
         } else {
             *self.pending_resize.lock() = Some((cols, rows));
@@ -170,7 +192,12 @@ impl PaneState {
 
     /// Extract text from the terminal grid between two pane-grid-local positions.
     /// Handles line wrapping: wrapped lines don't get a newline inserted.
-    pub fn extract_text(&self, start: (u16, u16), end: (u16, u16), _display_offset: usize) -> String {
+    pub fn extract_text(
+        &self,
+        start: (u16, u16),
+        end: (u16, u16),
+        _display_offset: usize,
+    ) -> String {
         let term = self.term.lock();
         let content = term.renderable_content();
         let offset = content.display_offset as i32;
@@ -181,7 +208,11 @@ impl PaneState {
         let mut result = String::new();
         for row in sr..=er {
             let col_start = if row == sr { sc } else { 0 };
-            let col_end = if row == er { ec } else { self.cols.saturating_sub(1) };
+            let col_end = if row == er {
+                ec
+            } else {
+                self.cols.saturating_sub(1)
+            };
 
             let mut line = String::new();
             for col in col_start..=col_end {
@@ -230,7 +261,12 @@ fn spawn_pty(
     ready: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
     let pty_system = NativePtySystem::default();
-    let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
+    let size = PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
     let pair = pty_system.openpty(size).context("opening PTY")?;
 
     let shell = shell_command();
@@ -240,19 +276,30 @@ fn spawn_pty(
     let _child = pair.slave.spawn_command(cmd).context("spawning shell")?;
 
     let pty_writer = pair.master.take_writer().context("getting PTY writer")?;
-    let mut pty_reader = pair.master.try_clone_reader().context("cloning PTY reader")?;
+    let mut pty_reader = pair
+        .master
+        .try_clone_reader()
+        .context("cloning PTY reader")?;
 
     drop(pair.slave);
 
     // Apply any resize that happened while we were spawning.
     if let Some((c, r)) = pending_resize.lock().take() {
-        let sz = PtySize { rows: r, cols: c, pixel_width: 0, pixel_height: 0 };
+        let sz = PtySize {
+            rows: r,
+            cols: c,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
         let _ = pair.master.resize(sz);
     }
 
     // Flush any buffered input that was typed before the PTY was ready.
     {
-        let mut handles = PtyHandles { writer: pty_writer, master: pair.master };
+        let mut handles = PtyHandles {
+            writer: pty_writer,
+            master: pair.master,
+        };
         let buffered: Vec<u8> = std::mem::take(&mut *input_buffer.lock());
         if !buffered.is_empty() {
             let _ = handles.writer.write_all(&buffered);
@@ -262,7 +309,10 @@ fn spawn_pty(
     }
 
     // Notify the UI that the PTY is connected (but shell may still be loading).
-    let _ = event_tx.send(PaneEvent::Data { pane_id: id, bytes: Vec::new() });
+    let _ = event_tx.send(PaneEvent::Data {
+        pane_id: id,
+        bytes: Vec::new(),
+    });
 
     // Reader loop — reads PTY output and feeds the term.
     // Mark ready on first output so the throbber shows until the shell renders.

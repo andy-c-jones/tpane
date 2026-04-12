@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyEventKind};
 
+use crate::core::keymap::KeyMap;
 use crate::core::layout::{Layout, PaneId};
 use crate::platform::pane::{PaneEvent, PaneState};
 use crate::platform::renderer::{self, Tui};
@@ -85,7 +86,10 @@ pub struct LivePaneFactory {
 impl LivePaneFactory {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { event_tx: tx, event_rx: Some(rx) }
+        Self {
+            event_tx: tx,
+            event_rx: Some(rx),
+        }
     }
 
     /// Take ownership of the event receiver (call once, before running the app).
@@ -118,10 +122,19 @@ impl<'a> Renderer<PaneState> for LiveRenderer<'a> {
         &mut self,
         layout: &Layout,
         panes: &HashMap<PaneId, PaneState>,
+        keymap: &KeyMap,
         terminal_size: (u16, u16),
         prefix_active: bool,
         selection: Option<&crate::core::selection::Selection>,
     ) -> Result<()> {
-        renderer::render(self.tui, layout, panes, terminal_size, prefix_active, selection)
+        renderer::render(
+            self.tui,
+            layout,
+            panes,
+            keymap,
+            terminal_size,
+            prefix_active,
+            selection,
+        )
     }
 }

@@ -3,6 +3,7 @@ use std::time::Duration;
 use anyhow::Result;
 use crossterm::event::{KeyEvent, MouseEvent};
 
+use crate::core::keymap::KeyMap;
 use crate::core::layout::PaneId;
 use crate::core::selection::Selection;
 
@@ -12,8 +13,13 @@ pub enum AppEvent {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Resize(u16, u16),
-    PaneData { #[allow(dead_code)] pane_id: PaneId },
-    PaneExit { pane_id: PaneId },
+    PaneData {
+        #[allow(dead_code)]
+        pane_id: PaneId,
+    },
+    PaneExit {
+        pane_id: PaneId,
+    },
 }
 
 /// Provides events (keyboard, resize, pane I/O) to the App.
@@ -30,7 +36,12 @@ pub trait PaneBackend: Send {
     fn resize(&mut self, cols: u16, rows: u16);
     /// Extract text from a rectangular selection region.
     /// Coordinates are pane-grid-local (col, row).
-    fn selected_text(&self, _start: (u16, u16), _end: (u16, u16), _display_offset: usize) -> String {
+    fn selected_text(
+        &self,
+        _start: (u16, u16),
+        _end: (u16, u16),
+        _display_offset: usize,
+    ) -> String {
         String::new()
     }
 }
@@ -46,6 +57,7 @@ pub trait Renderer<B: PaneBackend> {
         &mut self,
         layout: &crate::core::layout::Layout,
         panes: &std::collections::HashMap<PaneId, B>,
+        keymap: &KeyMap,
         terminal_size: (u16, u16),
         prefix_active: bool,
         selection: Option<&Selection>,
@@ -57,4 +69,3 @@ pub trait Clipboard {
     fn get_text(&mut self) -> Result<String>;
     fn set_text(&mut self, text: &str) -> Result<()>;
 }
-
