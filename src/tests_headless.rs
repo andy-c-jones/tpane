@@ -807,4 +807,87 @@ mod tests {
 
         assert!(app.selection.is_none(), "divider drag should not create a text selection");
     }
+
+    // ── apply_startup_commands with ratio ────────────────────────────────────
+
+    #[test]
+    fn startup_split_right_default_ratio_produces_equal_panes() {
+        let factory = HeadlessPaneFactory;
+        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
+        let cmds = vec![(crate::core::commands::Command::SplitRight, None)];
+        app.apply_startup_commands(&cmds, &factory).unwrap();
+
+        let (w, h) = TERM_SIZE;
+        let ids = app.layout.leaf_ids();
+        assert_eq!(ids.len(), 2);
+        let rects = app.layout.compute_rects(w, h);
+        // With 80 columns, a 50/50 vertical split gives ≈40 each (one divider col).
+        let left_w  = rects[&ids[0]].width;
+        let right_w = rects[&ids[1]].width;
+        assert!((left_w as i32 - right_w as i32).abs() <= 2,
+            "equal split should give roughly equal widths: left={left_w}, right={right_w}");
+    }
+
+    #[test]
+    fn startup_split_right_with_ratio_gives_correct_proportions() {
+        let factory = HeadlessPaneFactory;
+        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
+        // ratio=0.7 means the existing (left) pane keeps 70%
+        let cmds = vec![(crate::core::commands::Command::SplitRight, Some(0.7))];
+        app.apply_startup_commands(&cmds, &factory).unwrap();
+
+        let (w, h) = TERM_SIZE;
+        let ids = app.layout.leaf_ids();
+        let rects = app.layout.compute_rects(w, h);
+        let left_w  = rects[&ids[0]].width;
+        let right_w = rects[&ids[1]].width;
+        assert!(left_w > right_w,
+            "left pane should be wider (70%) than right pane (30%): left={left_w}, right={right_w}");
+    }
+
+    #[test]
+    fn startup_split_down_with_ratio_gives_correct_proportions() {
+        let factory = HeadlessPaneFactory;
+        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
+        // ratio=0.3 means the existing (top) pane keeps 30%
+        let cmds = vec![(crate::core::commands::Command::SplitDown, Some(0.3))];
+        app.apply_startup_commands(&cmds, &factory).unwrap();
+
+        let (w, h) = TERM_SIZE;
+        let ids = app.layout.leaf_ids();
+        let rects = app.layout.compute_rects(w, h);
+        let top_h    = rects[&ids[0]].height;
+        let bottom_h = rects[&ids[1]].height;
+        assert!(top_h < bottom_h,
+            "top pane should be shorter (30%) than bottom pane (70%): top={top_h}, bottom={bottom_h}");
+    }
+
+    #[test]
+    fn startup_split_left_with_ratio_keeps_original_pane_size() {
+        let factory = HeadlessPaneFactory;
+        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
+        // split_left(0.7): original pane keeps 70% (becomes right child), new left pane gets 30%
+        let cmds = vec![(crate::core::commands::Command::SplitLeft, Some(0.7))];
+        app.apply_startup_commands(&cmds, &factory).unwrap();
+
+        let (w, h) = TERM_SIZE;
+        let ids = app.layout.leaf_ids();
+        let rects = app.layout.compute_rects(w, h);
+        let left_w  = rects[&ids[0]].width;  // new pane (left, first child = 30%)
+        let right_w = rects[&ids[1]].width;  // original pane (right, second child = 70%)
+        assert!(right_w > left_w,
+            "original (right) pane should be wider (70%) than new left pane (30%): left={left_w}, right={right_w}");
+    }
+
+    #[test]
+    fn startup_commands_create_correct_pane_count() {
+        let factory = HeadlessPaneFactory;
+        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
+        let cmds = vec![
+            (crate::core::commands::Command::SplitRight, Some(0.6)),
+            (crate::core::commands::Command::SplitDown, None),
+        ];
+        app.apply_startup_commands(&cmds, &factory).unwrap();
+        assert_eq!(app.pane_count(), 3);
+    }
 }

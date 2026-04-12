@@ -89,11 +89,19 @@ impl Layout {
         self.split_with_position(orientation, SplitPosition::After)
     }
 
-    /// Split the active pane with explicit positioning of the new pane.
+    /// Split the active pane with explicit positioning of the new pane, using the default 50/50 ratio.
     pub fn split_with_position(&mut self, orientation: Orientation, position: SplitPosition) -> PaneId {
+        self.split_with_position_and_ratio(orientation, position, 0.5)
+    }
+
+    /// Split the active pane with explicit positioning and an explicit initial split ratio.
+    /// `ratio` is the fraction of space given to the **first child** (left or top), clamped to [0.05, 0.95].
+    /// Note: when called via `App::split`, the user-facing ratio (fraction for the original pane)
+    /// is converted to first-child space before being passed here.
+    pub fn split_with_position_and_ratio(&mut self, orientation: Orientation, position: SplitPosition, ratio: f64) -> PaneId {
         let new_id = self.next_id();
         let target = self.active;
-        split_node(&mut self.root, target, orientation, new_id, position);
+        split_node(&mut self.root, target, orientation, new_id, position, ratio.clamp(0.05, 0.95));
         self.focus_history.push(self.active);
         self.active = new_id;
         new_id
@@ -273,7 +281,7 @@ fn collect_leaves(node: &Node) -> Vec<PaneId> {
     }
 }
 
-fn split_node(node: &mut Node, target: PaneId, orientation: Orientation, new_id: PaneId, position: SplitPosition) -> bool {
+fn split_node(node: &mut Node, target: PaneId, orientation: Orientation, new_id: PaneId, position: SplitPosition, initial_ratio: f64) -> bool {
     match node {
         Node::Leaf(id) if *id == target => {
             let old_leaf = Node::Leaf(*id);
@@ -284,7 +292,7 @@ fn split_node(node: &mut Node, target: PaneId, orientation: Orientation, new_id:
             };
             *node = Node::Split {
                 orientation,
-                ratio: 0.5,
+                ratio: initial_ratio,
                 first: Box::new(first),
                 second: Box::new(second),
             };
@@ -292,8 +300,8 @@ fn split_node(node: &mut Node, target: PaneId, orientation: Orientation, new_id:
         }
         Node::Leaf(_) => false,
         Node::Split { first, second, .. } => {
-            split_node(first, target, orientation, new_id, position)
-                || split_node(second, target, orientation, new_id, position)
+            split_node(first, target, orientation, new_id, position, initial_ratio)
+                || split_node(second, target, orientation, new_id, position, initial_ratio)
         }
     }
 }

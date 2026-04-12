@@ -239,12 +239,12 @@ impl<B: PaneBackend> App<B> {
 
     fn dispatch<F: PaneFactory<B>>(&mut self, cmd: Command, factory: &F) -> Result<()> {
         match cmd {
-            Command::SplitVertical => self.split(Orientation::Vertical, SplitPosition::After, factory)?,
-            Command::SplitHorizontal => self.split(Orientation::Horizontal, SplitPosition::After, factory)?,
-            Command::SplitLeft => self.split(Orientation::Vertical, SplitPosition::Before, factory)?,
-            Command::SplitRight => self.split(Orientation::Vertical, SplitPosition::After, factory)?,
-            Command::SplitUp => self.split(Orientation::Horizontal, SplitPosition::Before, factory)?,
-            Command::SplitDown => self.split(Orientation::Horizontal, SplitPosition::After, factory)?,
+            Command::SplitVertical => self.split(Orientation::Vertical, SplitPosition::After, None, factory)?,
+            Command::SplitHorizontal => self.split(Orientation::Horizontal, SplitPosition::After, None, factory)?,
+            Command::SplitLeft => self.split(Orientation::Vertical, SplitPosition::Before, None, factory)?,
+            Command::SplitRight => self.split(Orientation::Vertical, SplitPosition::After, None, factory)?,
+            Command::SplitUp => self.split(Orientation::Horizontal, SplitPosition::Before, None, factory)?,
+            Command::SplitDown => self.split(Orientation::Horizontal, SplitPosition::After, None, factory)?,
             Command::ClosePane => {
                 let id = self.layout.active;
                 self.close_pane(id);
@@ -280,11 +280,32 @@ impl<B: PaneBackend> App<B> {
         &mut self,
         orientation: Orientation,
         position: SplitPosition,
+        initial_ratio: Option<f64>,
         factory: &F,
     ) -> Result<()> {
         self.selection = None;
         let (w, h) = self.terminal_size;
-        let new_id = self.layout.split_with_position(orientation, position);
+
+        // `initial_ratio` is the fraction of space that the **active (original) pane** keeps
+        // after the split. When position is After (e.g. split_right), the original becomes the
+        // first child so internal_ratio == initial_ratio. When position is Before (e.g.
+        // split_left), the original becomes the second child so we invert the fraction.
+        //
+        // The user-provided ratio is clamped to [0.05, 0.95] *before* inversion so that
+        // the original pane always receives the requested proportion (e.g. 0.98 is clamped to
+        // 0.95, meaning the original keeps 95% and the new pane gets 5%, regardless of
+        // SplitPosition).
+        let new_id = match initial_ratio {
+            Some(ratio) => {
+                let clamped = ratio.clamp(0.05, 0.95);
+                let internal_ratio = match position {
+                    SplitPosition::After  => clamped,
+                    SplitPosition::Before => 1.0 - clamped,
+                };
+                self.layout.split_with_position_and_ratio(orientation, position, internal_ratio)
+            }
+            None => self.layout.split_with_position(orientation, position),
+        };
 
         let rects = self.layout.compute_rects(w, h);
         for (id, pane) in self.panes.iter_mut() {
@@ -316,6 +337,32 @@ impl<B: PaneBackend> App<B> {
         }
         self.panes.remove(&id);
         self.refresh_pane_sizes();
+    }
+
+    /// Run startup layout commands (from `tpane.on_startup { ... }` in main.lua).
+    /// Each command may carry an optional split ratio; non-split commands ignore the ratio.
+    ///
+    /// The `ratio` for split commands is the fraction of space that the **currently active pane
+    /// keeps** after the split — e.g. `split_right(0.7)` leaves the original pane at 70% and
+    /// the new right pane at 30%.  The value is clamped to [0.05, 0.95].  `None` uses the
+    /// default 50/50 split.
+    pub fn apply_startup_commands<F: PaneFactory<B>>(
+        &mut self,
+        cmds: &[(Command, Option<f64>)],
+        factory: &F,
+    ) -> Result<()> {
+        for (cmd, ratio) in cmds {
+            match cmd {
+                Command::SplitVertical  => self.split(Orientation::Vertical,   SplitPosition::After,  *ratio, factory)?,
+                Command::SplitHorizontal => self.split(Orientation::Horizontal, SplitPosition::After,  *ratio, factory)?,
+                Command::SplitLeft       => self.split(Orientation::Vertical,   SplitPosition::Before, *ratio, factory)?,
+                Command::SplitRight      => self.split(Orientation::Vertical,   SplitPosition::After,  *ratio, factory)?,
+                Command::SplitUp         => self.split(Orientation::Horizontal, SplitPosition::Before, *ratio, factory)?,
+                Command::SplitDown       => self.split(Orientation::Horizontal, SplitPosition::After,  *ratio, factory)?,
+                other => self.dispatch(other.clone(), factory)?,
+            }
+        }
+        Ok(())
     }
 
     /// Recompute pane geometry and notify all backends of their new size.

@@ -10,9 +10,9 @@ use crate::core::keymap::{KeyChord, KeyMap};
 /// Resolved configuration after loading main.lua.
 pub struct LuaConfig {
     pub keymap: KeyMap,
-    /// Commands to run at startup (from tpane.on_startup).
-    #[allow(dead_code)]
-    pub startup_commands: Vec<Command>,
+    /// Commands to run at startup (from tpane.on_startup), each paired with an optional split ratio.
+    /// The ratio is the fraction of space the *active pane* keeps after the split (0.0–1.0).
+    pub startup_commands: Vec<(Command, Option<f64>)>,
     /// Show keybinding cheatsheet when prefix key is active.
     pub show_cheatsheet: bool,
     _lua: Lua,
@@ -111,6 +111,8 @@ impl LuaConfig {
             tpane_table.set("on_startup", on_startup_fn).map_err(lua_err)?;
 
             // Expose split helpers for use inside on_startup.
+            // Each accepts an optional ratio (0.05–0.95, clamped): fraction of space the current
+            // (active) pane keeps after the split. Omitting the argument uses 50/50.
             for name in &[
                 "split_vertical", "split_horizontal",
                 "split_left", "split_right", "split_up", "split_down",
@@ -118,8 +120,10 @@ impl LuaConfig {
             ] {
                 let n = *name;
                 let b = bindings_ref.clone();
-                let stub = lua.create_function(move |_, ()| {
-                    b.lock().push((format!("__startup__{}", n), String::new()));
+                let stub = lua.create_function(move |_, ratio: Option<f64>| {
+                    // Encode the optional ratio in the value field; empty string = no ratio.
+                    let ratio_str = ratio.map(|r| r.to_string()).unwrap_or_default();
+                    b.lock().push((format!("__startup__{}", n), ratio_str));
                     Ok(())
                 }).map_err(lua_err)?;
                 tpane_table.set(n, stub).map_err(lua_err)?;
@@ -143,11 +147,17 @@ impl LuaConfig {
             .unwrap_or(true); // default: on
 
         // Apply collected bindings to the keymap; collect startup commands.
-        let mut startup_commands: Vec<Command> = Vec::new();
+        let mut startup_commands: Vec<(Command, Option<f64>)> = Vec::new();
         for (chord_str, cmd_name) in bindings.lock().iter() {
             if let Some(stripped) = chord_str.strip_prefix("__startup__") {
                 if let Some(cmd) = Command::from_name(stripped) {
-                    startup_commands.push(cmd);
+                    // cmd_name holds the encoded ratio string (empty = no ratio).
+                    let ratio = if cmd_name.is_empty() {
+                        None
+                    } else {
+                        cmd_name.parse::<f64>().ok()
+                    };
+                    startup_commands.push((cmd, ratio));
                 }
             } else if let Some(stripped) = chord_str.strip_prefix("__direct__") {
                 if let Some(chord) = KeyChord::parse(stripped) {
@@ -264,7 +274,10 @@ tpane.on_startup(function()
 end)
 "#;
         let cfg = LuaConfig::load_from_source(src).unwrap();
-        assert_eq!(cfg.startup_commands, vec![Command::SplitVertical, Command::SplitHorizontal]);
+        assert_eq!(cfg.startup_commands, vec![
+            (Command::SplitVertical, None),
+            (Command::SplitHorizontal, None),
+        ]);
     }
 
     #[test]
@@ -369,7 +382,7 @@ tpane.on_startup(function()
 end)
 "#;
         let cfg = LuaConfig::load_from_source(src).unwrap();
-        assert_eq!(cfg.startup_commands, vec![Command::SplitRight]);
+        assert_eq!(cfg.startup_commands, vec![(Command::SplitRight, None)]);
     }
 
     #[test]
@@ -380,7 +393,53 @@ tpane.on_startup(function()
 end)
 "#;
         let cfg = LuaConfig::load_from_source(src).unwrap();
-        assert_eq!(cfg.startup_commands, vec![Command::SplitDown]);
+        assert_eq!(cfg.startup_commands, vec![(Command::SplitDown, None)]);
+    }
+
+    // ── on_startup with explicit ratio ───────────────────────────────────────
+
+    #[test]
+    fn on_startup_split_right_with_ratio_records_ratio() {
+        let src = r#"
+tpane.on_startup(function()
+  tpane.split_right(0.3)
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        let (cmd, ratio) = &cfg.startup_commands[0];
+        assert_eq!(*cmd, Command::SplitRight);
+        assert!((ratio.unwrap() - 0.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn on_startup_split_down_with_ratio_records_ratio() {
+        let src = r#"
+tpane.on_startup(function()
+  tpane.split_down(0.6)
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        let (cmd, ratio) = &cfg.startup_commands[0];
+        assert_eq!(*cmd, Command::SplitDown);
+        assert!((ratio.unwrap() - 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn on_startup_multiple_splits_with_mixed_ratios() {
+        let src = r#"
+tpane.on_startup(function()
+  tpane.split_right(0.7)
+  tpane.split_down()
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        assert_eq!(cfg.startup_commands.len(), 2);
+        let (cmd0, ratio0) = &cfg.startup_commands[0];
+        let (cmd1, ratio1) = &cfg.startup_commands[1];
+        assert_eq!(*cmd0, Command::SplitRight);
+        assert!((ratio0.unwrap() - 0.7).abs() < 1e-9);
+        assert_eq!(*cmd1, Command::SplitDown);
+        assert!(ratio1.is_none());
     }
 }
 
