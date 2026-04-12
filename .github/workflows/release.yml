@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to create/release (example: v1.2.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-tag:
+    name: Prepare tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Resolve tag
+        id: resolve
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-and-upload:
+    name: Build ${{ matrix.target }}
+    needs: prepare-tag
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: binary-linux
+            release_name: tpane
+            binary_path: target/x86_64-unknown-linux-gnu/release/tpane
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: binary-windows
+            release_name: tpane.exe
+            binary_path: target/x86_64-pc-windows-msvc/release/tpane.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.prepare-tag.outputs.tag }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "${{ matrix.binary_path }}" "dist/${{ matrix.release_name }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.release_name }}
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish immutable release
+    needs:
+      - prepare-tag
+      - build-and-upload
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-linux
+          path: dist
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-windows
+          path: dist
+
+      - name: Create immutable release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ needs.prepare-tag.outputs.tag }}
+          name: ${{ needs.prepare-tag.outputs.tag }}
+          artifacts: "dist/tpane,dist/tpane.exe"
+          immutableCreate: true
+          generateReleaseNotes: true

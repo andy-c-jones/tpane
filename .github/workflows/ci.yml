@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace --verbose
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Run tests (JUnit)
+        run: cargo nextest run --workspace --all-targets --junit-report target/nextest/junit.xml
+
+      - name: Publish test results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: target/nextest/junit.xml
+          check_name: Unit Test Results
+          comment_mode: off
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: target/nextest/junit.xml
+          if-no-files-found: error
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install llvm-tools
+        run: rustup component add llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate Cobertura coverage
+        run: cargo llvm-cov --workspace --all-targets --xml --output-path target/coverage/cobertura.xml
+
+      - name: Create coverage summary
+        uses: irongut/CodeCoverageSummary@v1.3.0
+        with:
+          filename: target/coverage/cobertura.xml
+          badge: true
+          fail_below_min: false
+          format: markdown
+          output: file
+
+      - name: Publish coverage summary
+        run: cat code-coverage-results.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            target/coverage/cobertura.xml
+            code-coverage-results.md
+          if-no-files-found: error
