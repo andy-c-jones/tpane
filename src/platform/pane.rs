@@ -1,8 +1,13 @@
+//! PTY-backed pane runtime and terminal event handling.
+//!
+//! A [`PaneState`] owns alacritty terminal state plus PTY handles, and bridges
+//! shell I/O/events into the app's event loop.
+
 use std::io::{Read, Write};
-use std::sync::{Arc, mpsc};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::thread;
 use std::sync::mpsc::SyncSender;
+use std::sync::{mpsc, Arc};
+use std::thread;
 
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
 use alacritty_terminal::sync::FairMutex;
@@ -18,10 +23,10 @@ use crate::core::layout::PaneId;
 
 #[derive(Debug)]
 pub enum PaneEvent {
+    /// Terminal output arrived for this pane.
     Data { pane_id: PaneId },
-    Exit {
-        pane_id: PaneId,
-    },
+    /// The pane's shell process exited.
+    Exit { pane_id: PaneId },
 }
 
 // ── EventListener implementation for alacritty Term ──────────────────────────
@@ -45,7 +50,11 @@ pub struct TpaneEventListener {
 impl TpaneEventListener {
     fn send_reply(&self, s: String) {
         if let Err(e) = self.reply_tx.try_send(s) {
-            log::warn!("pane {:?}: failed to enqueue PTY reply: {}", self.pane_id, e);
+            log::warn!(
+                "pane {:?}: failed to enqueue PTY reply: {}",
+                self.pane_id,
+                e
+            );
         }
     }
 }
@@ -228,7 +237,8 @@ impl PaneState {
 
         self.cols = cols;
         self.rows = rows;
-        self.packed_size.store(pack_size(cols, rows), Ordering::Relaxed);
+        self.packed_size
+            .store(pack_size(cols, rows), Ordering::Relaxed);
         let term_size = TermSize {
             cols: cols as usize,
             rows: rows as usize,
@@ -475,32 +485,120 @@ fn default_color_for_query(index: usize) -> alacritty_terminal::vte::ansi::Rgb {
 
     // xterm-like defaults for ANSI base + dynamic foreground/background/cursor.
     const ANSI_BASE: [Rgb; 16] = [
-        Rgb { r: 0x00, g: 0x00, b: 0x00 }, // black
-        Rgb { r: 0xcd, g: 0x00, b: 0x00 }, // red
-        Rgb { r: 0x00, g: 0xcd, b: 0x00 }, // green
-        Rgb { r: 0xcd, g: 0xcd, b: 0x00 }, // yellow
-        Rgb { r: 0x00, g: 0x00, b: 0xee }, // blue
-        Rgb { r: 0xcd, g: 0x00, b: 0xcd }, // magenta
-        Rgb { r: 0x00, g: 0xcd, b: 0xcd }, // cyan
-        Rgb { r: 0xe5, g: 0xe5, b: 0xe5 }, // white
-        Rgb { r: 0x7f, g: 0x7f, b: 0x7f }, // bright black
-        Rgb { r: 0xff, g: 0x00, b: 0x00 }, // bright red
-        Rgb { r: 0x00, g: 0xff, b: 0x00 }, // bright green
-        Rgb { r: 0xff, g: 0xff, b: 0x00 }, // bright yellow
-        Rgb { r: 0x5c, g: 0x5c, b: 0xff }, // bright blue
-        Rgb { r: 0xff, g: 0x00, b: 0xff }, // bright magenta
-        Rgb { r: 0x00, g: 0xff, b: 0xff }, // bright cyan
-        Rgb { r: 0xff, g: 0xff, b: 0xff }, // bright white
+        Rgb {
+            r: 0x00,
+            g: 0x00,
+            b: 0x00,
+        }, // black
+        Rgb {
+            r: 0xcd,
+            g: 0x00,
+            b: 0x00,
+        }, // red
+        Rgb {
+            r: 0x00,
+            g: 0xcd,
+            b: 0x00,
+        }, // green
+        Rgb {
+            r: 0xcd,
+            g: 0xcd,
+            b: 0x00,
+        }, // yellow
+        Rgb {
+            r: 0x00,
+            g: 0x00,
+            b: 0xee,
+        }, // blue
+        Rgb {
+            r: 0xcd,
+            g: 0x00,
+            b: 0xcd,
+        }, // magenta
+        Rgb {
+            r: 0x00,
+            g: 0xcd,
+            b: 0xcd,
+        }, // cyan
+        Rgb {
+            r: 0xe5,
+            g: 0xe5,
+            b: 0xe5,
+        }, // white
+        Rgb {
+            r: 0x7f,
+            g: 0x7f,
+            b: 0x7f,
+        }, // bright black
+        Rgb {
+            r: 0xff,
+            g: 0x00,
+            b: 0x00,
+        }, // bright red
+        Rgb {
+            r: 0x00,
+            g: 0xff,
+            b: 0x00,
+        }, // bright green
+        Rgb {
+            r: 0xff,
+            g: 0xff,
+            b: 0x00,
+        }, // bright yellow
+        Rgb {
+            r: 0x5c,
+            g: 0x5c,
+            b: 0xff,
+        }, // bright blue
+        Rgb {
+            r: 0xff,
+            g: 0x00,
+            b: 0xff,
+        }, // bright magenta
+        Rgb {
+            r: 0x00,
+            g: 0xff,
+            b: 0xff,
+        }, // bright cyan
+        Rgb {
+            r: 0xff,
+            g: 0xff,
+            b: 0xff,
+        }, // bright white
     ];
 
     match index {
         0..=15 => ANSI_BASE[index],
-        256 => Rgb { r: 0xd0, g: 0xd0, b: 0xd0 }, // foreground
-        257 => Rgb { r: 0x1e, g: 0x1e, b: 0x1e }, // background
-        258 => Rgb { r: 0xff, g: 0xff, b: 0xff }, // cursor
-        267 => Rgb { r: 0xff, g: 0xff, b: 0xff }, // bright foreground
-        268 => Rgb { r: 0x1e, g: 0x1e, b: 0x1e }, // dim background
-        _ => Rgb { r: 0xd0, g: 0xd0, b: 0xd0 },
+        256 => Rgb {
+            r: 0xd0,
+            g: 0xd0,
+            b: 0xd0,
+        }, // foreground
+        257 => Rgb {
+            r: 0x1e,
+            g: 0x1e,
+            b: 0x1e,
+        }, // background
+        258 => Rgb {
+            r: 0xff,
+            g: 0xff,
+            b: 0xff,
+        }, // cursor
+        267 => Rgb {
+            r: 0xff,
+            g: 0xff,
+            b: 0xff,
+        }, // bright foreground
+        268 => Rgb {
+            r: 0x1e,
+            g: 0x1e,
+            b: 0x1e,
+        }, // dim background
+        _ => Rgb {
+            r: 0xd0,
+            g: 0xd0,
+            b: 0xd0,
+        },
     }
 }
 

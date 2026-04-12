@@ -1,3 +1,8 @@
+//! Main tpane application coordinator.
+//!
+//! [`App`] owns the runtime pane set and layout state, processes input events,
+//! dispatches commands, and keeps backend pane geometry synchronized.
+
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -52,6 +57,7 @@ pub struct App<B: PaneBackend> {
 }
 
 impl<B: PaneBackend> App<B> {
+    /// Create a new app instance with one root pane spawned by `factory`.
     pub fn new<F: PaneFactory<B>>(
         keymap: KeyMap,
         terminal_size: (u16, u16),
@@ -548,8 +554,8 @@ impl<B: PaneBackend> App<B> {
                         }
                         drag.last_axis_coord = Some(axis_coord);
 
-                        let new_ratio =
-                            (axis_coord.saturating_sub(drag.rect_start)) as f64 / drag.rect_size as f64;
+                        let new_ratio = (axis_coord.saturating_sub(drag.rect_start)) as f64
+                            / drag.rect_size as f64;
                         if let Some(handle) = drag.split_handle.as_ref() {
                             self.layout.set_split_ratio_with_handle(handle, new_ratio);
                         } else {

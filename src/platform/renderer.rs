@@ -1,3 +1,8 @@
+//! Terminal UI rendering and key-to-PTY byte translation.
+//!
+//! This module draws pane borders/content/cheatsheet and provides helpers for
+//! translating crossterm key events into byte sequences expected by shells.
+
 use std::collections::HashMap;
 use std::io::{self, Stdout};
 use std::time::Instant;
@@ -20,6 +25,7 @@ use crate::core::layout::{Layout, PaneId};
 use crate::core::selection::Selection;
 use crate::platform::pane::PaneState;
 
+/// Concrete terminal type used by tpane's live renderer.
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
 /// Braille spinner frames — a smooth rotating dot pattern.

@@ -1,3 +1,8 @@
+//! Pure pane layout tree and geometry computation.
+//!
+//! This module contains no terminal I/O. It models pane splits/focus and
+//! resolves tree structure into concrete rectangles and divider metadata.
+
 use std::collections::HashMap;
 
 /// Unique identifier for a leaf pane.
@@ -78,6 +83,7 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// Create a layout with a single root pane (`PaneId(0)`) focused.
     pub fn new() -> Self {
         let root_id = PaneId(0);
         Self {
@@ -88,6 +94,7 @@ impl Layout {
         }
     }
 
+    /// Allocate and return a new unique pane identifier.
     pub fn next_id(&mut self) -> PaneId {
         let id = PaneId(self.next_id);
         self.next_id += 1;
@@ -1149,7 +1156,9 @@ mod tests {
 
         assert_eq!(rects.len(), rects_ref.len());
         for (id, rect) in &rects_ref {
-            let got = rects.get(id).expect("missing pane rect from compute_geometry");
+            let got = rects
+                .get(id)
+                .expect("missing pane rect from compute_geometry");
             assert_eq!(got.x, rect.x);
             assert_eq!(got.y, rect.y);
             assert_eq!(got.width, rect.width);
@@ -1174,25 +1183,24 @@ mod tests {
                 )
             })
             .collect();
-        let mut keys_ref: Vec<(u8, u16, u16, u16, u32, u32, u16, u16)> =
-            dividers_ref
-                .iter()
-                .map(|d| {
-                    (
-                        match d.orientation {
-                            Orientation::Vertical => 0,
-                            Orientation::Horizontal => 1,
-                        },
-                        d.position,
-                        d.span_start,
-                        d.span_end,
-                        d.first_pane.0,
-                        d.second_pane.0,
-                        d.rect_start,
-                        d.rect_size,
-                    )
-                })
-                .collect();
+        let mut keys_ref: Vec<(u8, u16, u16, u16, u32, u32, u16, u16)> = dividers_ref
+            .iter()
+            .map(|d| {
+                (
+                    match d.orientation {
+                        Orientation::Vertical => 0,
+                        Orientation::Horizontal => 1,
+                    },
+                    d.position,
+                    d.span_start,
+                    d.span_end,
+                    d.first_pane.0,
+                    d.second_pane.0,
+                    d.rect_start,
+                    d.rect_size,
+                )
+            })
+            .collect();
         keys.sort();
         keys_ref.sort();
         assert_eq!(keys, keys_ref);

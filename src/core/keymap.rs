@@ -1,3 +1,5 @@
+//! Key chord parsing and key-to-command mapping.
+
 use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -12,6 +14,7 @@ pub struct KeyChord {
 }
 
 impl KeyChord {
+    /// Convert a raw key event into a normalized chord key suitable for hashmap lookup.
     pub fn from_event(event: &KeyEvent) -> Self {
         // Normalize Char to lowercase so bindings stored as "ctrl+shift+t"
         // match real events where crossterm reports Char('T') + SHIFT.
@@ -93,6 +96,7 @@ pub struct KeyMap {
 }
 
 impl KeyMap {
+    /// Create an empty key map with the default prefix key (`Ctrl+B`).
     pub fn new() -> Self {
         Self {
             prefix_key: KeyChord::parse("ctrl+b").unwrap(),
@@ -101,6 +105,7 @@ impl KeyMap {
         }
     }
 
+    /// Register a prefix binding triggered after the prefix key is active.
     pub fn bind(&mut self, chord: KeyChord, command: Command) {
         self.prefix_bindings.insert(chord, command);
     }

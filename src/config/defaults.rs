@@ -1,3 +1,5 @@
+//! Embedded default configuration content.
+
 /// Embedded default Lua configuration written to ~/.config/tpane/main.lua on first run.
 pub const DEFAULT_CONFIG: &str = r#"-- tpane configuration
 -- This file is Lua. You can map keys to built-in commands or custom functions.

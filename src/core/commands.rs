@@ -1,3 +1,5 @@
+//! Command identifiers understood by the app dispatcher and Lua config parser.
+
 /// All actions that can be dispatched in tpane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {

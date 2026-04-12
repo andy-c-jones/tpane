@@ -29,6 +29,7 @@ pub struct LiveEventSource {
 }
 
 impl LiveEventSource {
+    /// Create a new live event source from a pane-event receiver.
     pub fn new(pane_rx: mpsc::Receiver<PaneEvent>) -> Self {
         Self {
             pane_rx,
@@ -154,6 +155,7 @@ pub struct LivePaneFactory {
 }
 
 impl LivePaneFactory {
+    /// Create a pane factory and its internal bounded event channel.
     pub fn new() -> Self {
         let (tx, rx) = mpsc::sync_channel(PANE_EVENT_CHANNEL_CAPACITY);
         Self {
@@ -183,6 +185,7 @@ pub struct LiveRenderer<'a> {
 }
 
 impl<'a> LiveRenderer<'a> {
+    /// Create a live renderer bound to a ratatui terminal instance.
     pub fn new(tui: &'a mut Tui) -> Self {
         Self {
             tui,

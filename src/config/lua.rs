@@ -1,3 +1,5 @@
+//! Lua-backed configuration loading and binding extraction.
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -33,6 +35,7 @@ impl LuaConfig {
         base.join("tpane")
     }
 
+    /// Return the path to the main configuration file (`main.lua`).
     pub fn config_file() -> PathBuf {
         Self::config_dir().join("main.lua")
     }

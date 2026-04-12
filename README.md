@@ -136,6 +136,18 @@ tpane uses trait-based abstractions for testability:
 
 `App<B: PaneBackend>` is generic over the backend. Production uses real PTY/terminal implementations; tests use headless mocks that run without a terminal.
 
+### Formatting enforcement
+
+Formatting is enforced both locally and in CI:
+
+```sh
+# One-time setup: enable repository-managed git hooks
+./scripts/setup-git-hooks.sh
+```
+
+- Pre-commit hook: `.githooks/pre-commit` runs `cargo fmt --all -- --check`
+- CI: `.github/workflows/ci.yml` also runs `cargo fmt --all -- --check`
+
 ## License
 
 MIT

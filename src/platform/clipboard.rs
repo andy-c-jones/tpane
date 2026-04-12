@@ -1,3 +1,5 @@
+//! System clipboard adapter for production runtime.
+
 use anyhow::{Context, Result};
 
 use crate::traits::Clipboard;
@@ -8,6 +10,7 @@ pub struct SystemClipboard {
 }
 
 impl SystemClipboard {
+    /// Create a system clipboard instance.
     pub fn new() -> Self {
         Self {
             inner: arboard::Clipboard::new().expect("failed to access system clipboard"),

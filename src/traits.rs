@@ -1,3 +1,5 @@
+//! Core abstractions used to decouple app logic from platform details.
+
 use std::time::Duration;
 
 use anyhow::Result;

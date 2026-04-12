@@ -1,3 +1,5 @@
+//! Pane-local text selection model.
+
 use super::layout::PaneId;
 
 /// Tracks a text selection within a single pane.

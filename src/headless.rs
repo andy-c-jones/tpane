@@ -18,16 +18,19 @@ pub struct HeadlessEventSource {
 }
 
 impl HeadlessEventSource {
+    /// Create an empty in-memory event queue.
     pub fn new() -> Self {
         Self {
             queue: VecDeque::new(),
         }
     }
 
+    /// Append a single event to the queue.
     pub fn push(&mut self, event: AppEvent) {
         self.queue.push_back(event);
     }
 
+    /// Append multiple events to the queue in order.
     pub fn push_all(&mut self, events: impl IntoIterator<Item = AppEvent>) {
         self.queue.extend(events);
     }
@@ -51,6 +54,7 @@ pub struct HeadlessPaneBackend {
 }
 
 impl HeadlessPaneBackend {
+    /// Construct a mock pane backend with initial geometry.
     pub fn new(id: PaneId, cols: u16, rows: u16) -> Self {
         Self {
             id,
@@ -95,6 +99,7 @@ pub struct HeadlessRenderer {
 }
 
 impl HeadlessRenderer {
+    /// Create a renderer that records render calls for assertions.
     pub fn new() -> Self {
         Self {
             frame_count: 0,
@@ -127,6 +132,7 @@ pub struct HeadlessClipboard {
 }
 
 impl HeadlessClipboard {
+    /// Create an empty in-memory clipboard.
     pub fn new() -> Self {
         Self {
             content: String::new(),
