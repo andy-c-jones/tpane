@@ -202,7 +202,7 @@ pub fn cheatsheet_bar_height(w: u16, keymap: &KeyMap) -> u16 {
 }
 
 /// Draw a styled cheatsheet bar showing available keybindings.
-/// Dynamically wraps bindings across multiple lines to fit the terminal width.
+/// Renders bindings in an aligned grid that adapts to terminal width.
 fn render_cheatsheet(
     frame: &mut ratatui::Frame,
     keymap: &KeyMap,
@@ -229,10 +229,6 @@ fn render_cheatsheet(
     let mut lines: Vec<TuiLine> = Vec::new();
     for row in 0..layout.rows {
         let mut spans: Vec<Span> = Vec::new();
-        if row == 0 {
-            spans.push(Span::styled(" tpane ", title_style));
-            spans.push(Span::styled("│ ", sep_style));
-        }
 
         for col in 0..layout.cols {
             if col > 0 {
@@ -313,22 +309,23 @@ struct CheatsheetGridLayout {
 
 const CHEATSHEET_COL_SEPARATOR_WIDTH: usize = 3; // " │ "
 const CHEATSHEET_MIN_COLUMN_WIDTH: usize = 18;
+const CHEATSHEET_MAX_COLUMNS: usize = 3;
 
 fn compute_cheatsheet_grid_layout(
     entries: &[(String, &'static str)],
     inner_w: usize,
 ) -> CheatsheetGridLayout {
-    let title_prefix_len = " tpane │ ".chars().count();
     if entries.is_empty() {
         return CheatsheetGridLayout {
             cols: 1,
             rows: 1,
-            col_widths: vec![title_prefix_len],
+            col_widths: vec![0],
         };
     }
 
     let max_cols = entries
         .len()
+        .min(CHEATSHEET_MAX_COLUMNS)
         .min((inner_w / CHEATSHEET_MIN_COLUMN_WIDTH).max(1));
 
     for cols in (1..=max_cols).rev() {
@@ -339,9 +336,6 @@ fn compute_cheatsheet_grid_layout(
             let col = idx % cols;
             col_widths[col] =
                 col_widths[col].max(cheatsheet_entry_width_chars((entry.0.as_str(), entry.1)));
-        }
-        if rows > 0 {
-            col_widths[0] = col_widths[0].max(title_prefix_len);
         }
 
         let total_width: usize = col_widths.iter().sum::<usize>()
@@ -359,7 +353,7 @@ fn compute_cheatsheet_grid_layout(
     for entry in entries {
         width = width.max(cheatsheet_entry_width_chars((entry.0.as_str(), entry.1)));
     }
-    width = width.max(title_prefix_len).min(inner_w.max(1));
+    width = width.min(inner_w.max(1));
     CheatsheetGridLayout {
         cols: 1,
         rows: entries.len(),
