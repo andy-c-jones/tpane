@@ -1,6 +1,8 @@
 # tpane
 
-A cross-platform terminal multiplexer that works like a tiling window manager. Built as a "personal development environment" tool for myself since I wanted a single small application I could use across all my environments that did just what I needed and nothing else.
+A cross-platform terminal multiplexer that works like a tiling window manager. 
+
+Built as a "personal development environment" tool for myself since I wanted a single small application I could use across all my environments that did just what I needed and nothing else.
 
 tpane splits your terminal into panes — vertically then horizontally — and lets you manage them with simple keybindings. Configuration is done in Lua, so you can remap keys and script startup layouts.
 
