@@ -74,6 +74,11 @@ pub fn render(
         let rects = layout.compute_rects(w, pane_area_h);
 
         for (pane_id, rect) in &rects {
+            // Skip panes with no visible area (can happen during resize).
+            if rect.width < 2 || rect.height < 2 {
+                continue;
+            }
+
             let is_active = *pane_id == layout.active;
             let tui_rect = TuiRect {
                 x: rect.x,
@@ -111,6 +116,11 @@ pub fn render(
             // Inner area available for terminal content (inside borders).
             let inner = block.inner(tui_rect);
             frame.render_widget(block, tui_rect);
+
+            // Skip rendering content if inner area is empty.
+            if inner.width == 0 || inner.height == 0 {
+                continue;
+            }
 
             if let Some(pane) = panes.get(pane_id) {
                 if term_has_visible_content(pane, inner.width, inner.height) {
@@ -268,6 +278,10 @@ fn render_cheatsheet(
         width: w,
         height: bar_height,
     };
+
+    if bar_rect.width < 2 || bar_rect.height < 2 {
+        return;
+    }
 
     let block = Block::default()
         .borders(Borders::ALL)
