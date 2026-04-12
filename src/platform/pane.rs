@@ -213,8 +213,7 @@ impl PaneState {
     pub fn write_input(&mut self, bytes: &[u8]) -> Result<()> {
         let mut pty_guard = self.pty.lock();
         if let Some(ref mut handles) = *pty_guard {
-            handles.writer.write_all(bytes).context("writing to PTY")?;
-            handles.writer.flush().context("flushing PTY writer")
+            handles.writer.write_all(bytes).context("writing to PTY")
         } else {
             self.input_buffer.lock().extend_from_slice(bytes);
             Ok(())
@@ -388,7 +387,6 @@ fn spawn_pty(
         let buffered: Vec<u8> = std::mem::take(&mut *input_buffer.lock());
         if !buffered.is_empty() {
             let _ = handles.writer.write_all(&buffered);
-            let _ = handles.writer.flush();
         }
         *pty_slot.lock() = Some(handles);
     }
@@ -401,7 +399,7 @@ fn spawn_pty(
     // Reader loop — reads PTY output and feeds the term.
     // Mark ready on first output so the throbber shows until the shell renders.
     let mut processor = Processor::<StdSyncHandler>::new();
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; 65536];
     loop {
         match pty_reader.read(&mut buf) {
             Ok(0) | Err(_) => {
