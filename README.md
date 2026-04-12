@@ -4,6 +4,8 @@ A cross-platform terminal multiplexer that works like a tiling window manager.
 
 tpane splits your terminal into panes — vertically then horizontally — and lets you manage them with simple keybindings. Configuration is done in Lua, so you can remap keys and script startup layouts.
 
+<img width="2560" height="1412" alt="image" src="https://github.com/user-attachments/assets/6f9fb07c-329e-4ebf-9667-5f6ca259093c" />
+
 ## Features
 
 - **Tiling pane management** — binary tree layout with vertical and horizontal splits
