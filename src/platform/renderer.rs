@@ -40,7 +40,7 @@ struct PaneRenderKey {
 #[derive(Debug, Clone)]
 struct PaneRenderCache {
     key: PaneRenderKey,
-    content: Option<Text<'static>>,
+    content: Option<Vec<TuiLine<'static>>>,
 }
 
 #[derive(Default)]
@@ -176,23 +176,28 @@ pub fn render(
                     ready: pane.is_ready(),
                 };
                 let content = match cache.pane_content.get(pane_id) {
-                    Some(cached) if cached.key == key => cached.content.clone(),
+                    Some(cached) if cached.key == key => cached.content.as_ref(),
                     _ => {
-                        let built = term_to_text(pane, inner.width, inner.height, sel_range);
+                        let built = term_to_lines(pane, inner.width, inner.height, sel_range);
                         cache.pane_content.insert(
                             *pane_id,
                             PaneRenderCache {
                                 key,
-                                content: built.clone(),
+                                content: built,
                             },
                         );
-                        built
+                        cache
+                            .pane_content
+                            .get(pane_id)
+                            .and_then(|cached| cached.content.as_ref())
                     }
                 };
 
-                if let Some(content) = content {
-                    let para = Paragraph::new(content);
-                    frame.render_widget(para, inner);
+                if let Some(lines) = content {
+                    let buf = frame.buffer_mut();
+                    for (row, line) in lines.iter().take(inner.height as usize).enumerate() {
+                        buf.set_line(inner.x, inner.y + row as u16, line, inner.width);
+                    }
                 } else {
                     // Braille loading throbber for panes still spawning.
                     let start = START.get_or_init(Instant::now);
@@ -522,12 +527,12 @@ fn key_chord_to_display(chord: &KeyChord) -> String {
 
 /// Convert the alacritty Term grid into ratatui Text for display.
 /// If `sel_range` is Some, cells within the selection are rendered with inverted colors.
-fn term_to_text(
+fn term_to_lines(
     pane: &PaneState,
     width: u16,
     height: u16,
     sel_range: Option<((u16, u16), (u16, u16))>,
-) -> Option<Text<'static>> {
+) -> Option<Vec<TuiLine<'static>>> {
     let term = pane.term.lock();
     let content: RenderableContent<'_> = term.renderable_content();
 
@@ -591,7 +596,7 @@ fn term_to_text(
     }
 
     if has_visible_content {
-        Some(Text::from(lines))
+        Some(lines)
     } else {
         None
     }
