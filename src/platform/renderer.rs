@@ -107,7 +107,7 @@ pub fn render(
             frame.render_widget(block, tui_rect);
 
             if let Some(pane) = panes.get(pane_id) {
-                if pane.is_ready() {
+                if term_has_visible_content(pane, inner.width, inner.height) {
                     let content = term_to_text(pane, inner.width, inner.height);
                     let para = Paragraph::new(content);
                     frame.render_widget(para, inner);
@@ -196,6 +196,26 @@ fn render_cheatsheet(
         .title(Span::styled(" Keybindings ", title_style));
     let para = Paragraph::new(Text::from(line)).block(block);
     frame.render_widget(para, bar_rect);
+}
+
+/// Check if the terminal grid has any visible (non-space, non-null) content.
+/// Used to decide whether to show the loading throbber or real terminal content.
+fn term_has_visible_content(pane: &PaneState, width: u16, height: u16) -> bool {
+    let term = pane.term.lock();
+    let content: RenderableContent<'_> = term.renderable_content();
+    let rows = height as usize;
+    let cols = width as usize;
+
+    for row in 0..rows {
+        for col in 0..cols {
+            let point = Point::new(Line(row as i32 - content.display_offset as i32), Column(col));
+            let c = term.grid()[point].c;
+            if c != '\0' && c != ' ' {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Convert the alacritty Term grid into ratatui Text for display.
