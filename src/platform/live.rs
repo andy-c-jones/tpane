@@ -1,6 +1,7 @@
 //! Live (real terminal) implementations of the trait abstractions.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -20,6 +21,7 @@ use crate::traits::{AppEvent, EventSource, PaneBackend, PaneFactory, Renderer};
 pub struct LiveEventSource {
     pane_rx: mpsc::Receiver<PaneEvent>,
     queued: VecDeque<AppEvent>,
+    queued_pane_data: HashSet<PaneId>,
 }
 
 impl LiveEventSource {
@@ -27,11 +29,17 @@ impl LiveEventSource {
         Self {
             pane_rx,
             queued: VecDeque::new(),
+            queued_pane_data: HashSet::new(),
         }
     }
 
     fn queue_event_coalesced(&mut self, event: AppEvent) {
         match event {
+            AppEvent::PaneData { pane_id } => {
+                if self.queued_pane_data.insert(pane_id) {
+                    self.queued.push_back(AppEvent::PaneData { pane_id });
+                }
+            }
             AppEvent::Mouse(mouse) if mouse.kind == MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(AppEvent::Mouse(last)) = self.queued.back_mut() {
                     if last.kind == MouseEventKind::Drag(MouseButton::Left) {
@@ -53,6 +61,16 @@ impl LiveEventSource {
         }
     }
 
+    fn pop_queued_event(&mut self) -> Option<AppEvent> {
+        let event = self.queued.pop_front()?;
+        if let AppEvent::PaneData { pane_id } = event {
+            self.queued_pane_data.remove(&pane_id);
+            Some(AppEvent::PaneData { pane_id })
+        } else {
+            Some(event)
+        }
+    }
+
     fn map_crossterm_event(event: Event) -> Option<AppEvent> {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => Some(AppEvent::Key(key)),
@@ -65,7 +83,7 @@ impl LiveEventSource {
 
 impl EventSource for LiveEventSource {
     fn next_event(&mut self, timeout: Duration) -> Result<Option<AppEvent>> {
-        if let Some(event) = self.queued.pop_front() {
+        if let Some(event) = self.pop_queued_event() {
             return Ok(Some(event));
         }
 
@@ -77,7 +95,7 @@ impl EventSource for LiveEventSource {
             };
             self.queue_event_coalesced(app_event);
         }
-        if let Some(event) = self.queued.pop_front() {
+        if let Some(event) = self.pop_queued_event() {
             return Ok(Some(event));
         }
 
@@ -93,7 +111,7 @@ impl EventSource for LiveEventSource {
                 }
             }
 
-            return Ok(self.queued.pop_front());
+            return Ok(self.pop_queued_event());
         }
 
         Ok(None)
