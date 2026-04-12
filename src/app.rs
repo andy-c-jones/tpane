@@ -23,6 +23,8 @@ struct DividerDrag {
     rect_start: u16,
     /// Total size of the split rect along the split axis.
     rect_size: u16,
+    /// Last processed mouse coordinate along the split axis.
+    last_axis_coord: Option<u16>,
 }
 
 /// Central application state, generic over the pane backend.
@@ -463,8 +465,6 @@ impl<B: PaneBackend> App<B> {
             0
         };
         let pane_area_h = h.saturating_sub(cheatsheet_h);
-        let rects = self.layout.compute_rects(w, pane_area_h);
-        let dividers = self.layout.compute_dividers(w, pane_area_h);
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -474,18 +474,25 @@ impl<B: PaneBackend> App<B> {
                 self.resize_drag = None;
 
                 // Check if the click lands on a divider first.
+                let dividers = self.layout.compute_dividers(w, pane_area_h);
                 if let Some(div) = Self::find_divider_at(&dividers, mouse.column, mouse.row) {
+                    let axis_coord = match div.orientation {
+                        Orientation::Vertical => mouse.column,
+                        Orientation::Horizontal => mouse.row,
+                    };
                     self.resize_drag = Some(DividerDrag {
                         first_pane: div.first_pane,
                         second_pane: div.second_pane,
                         orientation: div.orientation,
                         rect_start: div.rect_start,
                         rect_size: div.rect_size,
+                        last_axis_coord: Some(axis_coord),
                     });
                     return;
                 }
 
                 // Find which pane was clicked.
+                let rects = self.layout.compute_rects(w, pane_area_h);
                 if let Some((pane_id, rect)) = Self::find_pane_at(&rects, mouse.column, mouse.row) {
                     self.layout.set_active(pane_id);
 
@@ -514,18 +521,20 @@ impl<B: PaneBackend> App<B> {
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 // Divider drag: update the split ratio.
-                if let Some(ref drag) = self.resize_drag {
+                if let Some(ref mut drag) = self.resize_drag {
                     if drag.rect_size > 0 {
-                        let new_ratio = match drag.orientation {
-                            Orientation::Vertical => {
-                                (mouse.column.saturating_sub(drag.rect_start)) as f64
-                                    / drag.rect_size as f64
-                            }
-                            Orientation::Horizontal => {
-                                (mouse.row.saturating_sub(drag.rect_start)) as f64
-                                    / drag.rect_size as f64
-                            }
+                        let axis_coord = match drag.orientation {
+                            Orientation::Vertical => mouse.column,
+                            Orientation::Horizontal => mouse.row,
                         };
+
+                        if drag.last_axis_coord == Some(axis_coord) {
+                            return;
+                        }
+                        drag.last_axis_coord = Some(axis_coord);
+
+                        let new_ratio =
+                            (axis_coord.saturating_sub(drag.rect_start)) as f64 / drag.rect_size as f64;
                         let (fp, sp) = (drag.first_pane, drag.second_pane);
                         self.layout.set_split_ratio(fp, sp, new_ratio);
                         self.refresh_pane_sizes();
@@ -535,6 +544,7 @@ impl<B: PaneBackend> App<B> {
 
                 self.dragging = true;
                 if let Some(ref mut sel) = self.selection {
+                    let rects = self.layout.compute_rects(w, pane_area_h);
                     if let Some(rect) = rects.get(&sel.pane_id) {
                         let inner_x = rect.x + 1;
                         let inner_y = rect.y + 1;
@@ -566,6 +576,7 @@ impl<B: PaneBackend> App<B> {
                     // Selection exists: copy it to clipboard.
                     self.copy_selection(clipboard);
                 } else {
+                    let rects = self.layout.compute_rects(w, pane_area_h);
                     // No selection: paste clipboard into the clicked pane.
                     let target = Self::find_pane_at(&rects, mouse.column, mouse.row)
                         .map(|(id, _)| id)
