@@ -18,11 +18,7 @@ use crate::core::layout::PaneId;
 
 #[derive(Debug)]
 pub enum PaneEvent {
-    Data {
-        pane_id: PaneId,
-        #[allow(dead_code)]
-        bytes: Vec<u8>,
-    },
+    Data { pane_id: PaneId },
     Exit {
         pane_id: PaneId,
     },
@@ -371,7 +367,6 @@ fn spawn_pty(
     // Notify the UI that the PTY is connected (but shell may still be loading).
     let _ = event_tx.send(PaneEvent::Data {
         pane_id: id,
-        bytes: Vec::new(),
     });
 
     // Reader loop — reads PTY output and feeds the term.
@@ -401,10 +396,7 @@ fn spawn_pty(
                 if !ready.load(std::sync::atomic::Ordering::Relaxed) {
                     ready.store(true, std::sync::atomic::Ordering::Release);
                 }
-                let _ = event_tx.send(PaneEvent::Data {
-                    pane_id: id,
-                    bytes: buf[..n].to_vec(),
-                });
+                let _ = event_tx.send(PaneEvent::Data { pane_id: id });
             }
         }
     }

@@ -72,7 +72,7 @@ impl EventSource for LiveEventSource {
         // Drain pane events first (non-blocking).
         while let Ok(pane_event) = self.pane_rx.try_recv() {
             let app_event = match pane_event {
-                PaneEvent::Data { pane_id, .. } => AppEvent::PaneData { pane_id },
+                PaneEvent::Data { pane_id } => AppEvent::PaneData { pane_id },
                 PaneEvent::Exit { pane_id } => AppEvent::PaneExit { pane_id },
             };
             self.queue_event_coalesced(app_event);
