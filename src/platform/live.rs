@@ -15,6 +15,9 @@ use crate::platform::pane::{PaneEvent, PaneState};
 use crate::platform::renderer::{self, RenderCache, Tui};
 use crate::traits::{AppEvent, EventSource, PaneBackend, PaneFactory, Renderer};
 
+const MAX_PANE_EVENTS_PER_TICK: usize = 128;
+const MAX_CROSSTERM_EVENTS_PER_TICK: usize = 128;
+
 // ── LiveEventSource ──────────────────────────────────────────────────────────
 
 /// Merges crossterm terminal events with PTY pane events.
@@ -88,7 +91,11 @@ impl EventSource for LiveEventSource {
         }
 
         // Drain pane events first (non-blocking).
-        while let Ok(pane_event) = self.pane_rx.try_recv() {
+        for _ in 0..MAX_PANE_EVENTS_PER_TICK {
+            let pane_event = match self.pane_rx.try_recv() {
+                Ok(event) => event,
+                Err(_) => break,
+            };
             let app_event = match pane_event {
                 PaneEvent::Data { pane_id } => AppEvent::PaneData { pane_id },
                 PaneEvent::Exit { pane_id } => AppEvent::PaneExit { pane_id },
@@ -105,10 +112,12 @@ impl EventSource for LiveEventSource {
                 self.queue_event_coalesced(event);
             }
 
-            while event::poll(Duration::from_millis(0))? {
+            let mut drained = 0usize;
+            while drained < MAX_CROSSTERM_EVENTS_PER_TICK && event::poll(Duration::from_millis(0))? {
                 if let Some(event) = Self::map_crossterm_event(event::read()?) {
                     self.queue_event_coalesced(event);
                 }
+                drained += 1;
             }
 
             return Ok(self.pop_queued_event());
