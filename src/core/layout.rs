@@ -62,6 +62,12 @@ pub struct DividerInfo {
     pub rect_size: u16,
 }
 
+/// Stable handle to a specific split node in the current tree.
+#[derive(Debug, Clone)]
+pub struct SplitHandle {
+    path: Vec<bool>,
+}
+
 /// The full layout state.
 pub struct Layout {
     pub root: Node,
@@ -226,6 +232,28 @@ impl Layout {
         dividers
     }
 
+    /// Compute pane rects and divider metadata in a single tree traversal.
+    pub fn compute_geometry(
+        &self,
+        width: u16,
+        height: u16,
+    ) -> (HashMap<PaneId, Rect>, Vec<DividerInfo>) {
+        let mut rects = HashMap::new();
+        let mut dividers = Vec::new();
+        collect_geometry(
+            &self.root,
+            Rect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
+            &mut rects,
+            &mut dividers,
+        );
+        (rects, dividers)
+    }
+
     /// Adjust the ratio of the innermost split (with `orientation`) that contains `pane_id`.
     /// Positive `delta` moves the split toward the end of that axis (right/down);
     /// negative `delta` moves it toward the start (left/up).
@@ -238,6 +266,22 @@ impl Layout {
     /// `new_ratio` is clamped to [0.05, 0.95].
     pub fn set_split_ratio(&mut self, first_pane: PaneId, second_pane: PaneId, new_ratio: f64) {
         set_ratio_for_split(&mut self.root, first_pane, second_pane, new_ratio);
+    }
+
+    /// Build a reusable handle to a split identified by its representative leaf pane IDs.
+    pub fn split_handle(&self, first_pane: PaneId, second_pane: PaneId) -> Option<SplitHandle> {
+        let mut path = Vec::new();
+        if find_split_path(&self.root, first_pane, second_pane, &mut path) {
+            Some(SplitHandle { path })
+        } else {
+            None
+        }
+    }
+
+    /// Set split ratio using a previously resolved split handle.
+    /// Returns false if the handle no longer points to a split in the current tree.
+    pub fn set_split_ratio_with_handle(&mut self, handle: &SplitHandle, new_ratio: f64) -> bool {
+        set_ratio_at_path(&mut self.root, &handle.path, new_ratio)
     }
 
     /// Focus the nearest pane in the given direction using spatial geometry.
@@ -454,6 +498,64 @@ fn collect_dividers(node: &Node, rect: Rect, dividers: &mut Vec<DividerInfo>) {
     }
 }
 
+/// Collect pane rects and divider infos in one pass; returns first leaf ID in this subtree.
+fn collect_geometry(
+    node: &Node,
+    rect: Rect,
+    rects: &mut HashMap<PaneId, Rect>,
+    dividers: &mut Vec<DividerInfo>,
+) -> PaneId {
+    match node {
+        Node::Leaf(id) => {
+            rects.insert(*id, rect);
+            *id
+        }
+        Node::Split {
+            orientation,
+            ratio,
+            first,
+            second,
+        } => {
+            let (r1, r2) = split_rect(rect, *orientation, *ratio);
+            let first_leaf = collect_geometry(first, r1, rects, dividers);
+            let second_leaf = collect_geometry(second, r2, rects, dividers);
+
+            let has_divider = match orientation {
+                Orientation::Vertical => r2.x > r1.x + r1.width,
+                Orientation::Horizontal => r2.y > r1.y + r1.height,
+            };
+
+            if has_divider {
+                let info = match orientation {
+                    Orientation::Vertical => DividerInfo {
+                        orientation: Orientation::Vertical,
+                        position: r1.x + r1.width,
+                        span_start: rect.y,
+                        span_end: rect.y + rect.height,
+                        first_pane: first_leaf,
+                        second_pane: second_leaf,
+                        rect_start: rect.x,
+                        rect_size: rect.width,
+                    },
+                    Orientation::Horizontal => DividerInfo {
+                        orientation: Orientation::Horizontal,
+                        position: r1.y + r1.height,
+                        span_start: rect.x,
+                        span_end: rect.x + rect.width,
+                        first_pane: first_leaf,
+                        second_pane: second_leaf,
+                        rect_start: rect.y,
+                        rect_size: rect.height,
+                    },
+                };
+                dividers.push(info);
+            }
+
+            first_leaf
+        }
+    }
+}
+
 /// Single-pass inner helper: returns `(contains_pane, was_adjusted)`.
 /// Traverses deepest-first so the innermost matching split wins.
 fn adjust_ratio_in_inner(
@@ -525,6 +627,57 @@ fn set_ratio_for_split(
             } else {
                 set_ratio_for_split(first, first_pane, second_pane, new_ratio)
                     || set_ratio_for_split(second, first_pane, second_pane, new_ratio)
+            }
+        }
+    }
+}
+
+fn find_split_path(
+    node: &Node,
+    first_pane: PaneId,
+    second_pane: PaneId,
+    path: &mut Vec<bool>,
+) -> bool {
+    match node {
+        Node::Leaf(_) => false,
+        Node::Split { first, second, .. } => {
+            if first_leaf_id(first) == first_pane && first_leaf_id(second) == second_pane {
+                return true;
+            }
+
+            path.push(false);
+            if find_split_path(first, first_pane, second_pane, path) {
+                return true;
+            }
+            path.pop();
+
+            path.push(true);
+            if find_split_path(second, first_pane, second_pane, path) {
+                return true;
+            }
+            path.pop();
+
+            false
+        }
+    }
+}
+
+fn set_ratio_at_path(node: &mut Node, path: &[bool], new_ratio: f64) -> bool {
+    match node {
+        Node::Leaf(_) => false,
+        Node::Split { ratio, .. } if path.is_empty() => {
+            *ratio = new_ratio.clamp(0.05, 0.95);
+            true
+        }
+        Node::Split { first, second, .. } => {
+            if let Some((&head, tail)) = path.split_first() {
+                if head {
+                    set_ratio_at_path(second, tail, new_ratio)
+                } else {
+                    set_ratio_at_path(first, tail, new_ratio)
+                }
+            } else {
+                false
             }
         }
     }
@@ -982,6 +1135,69 @@ mod tests {
         assert_eq!(dividers.len(), 2);
     }
 
+    #[test]
+    fn compute_geometry_matches_rects_and_dividers() {
+        let mut layout = Layout::new();
+        layout.split(Orientation::Vertical);
+        layout.split(Orientation::Horizontal);
+        layout.focus_prev();
+        layout.split(Orientation::Vertical);
+
+        let (rects, dividers) = layout.compute_geometry(120, 40);
+        let rects_ref = layout.compute_rects(120, 40);
+        let dividers_ref = layout.compute_dividers(120, 40);
+
+        assert_eq!(rects.len(), rects_ref.len());
+        for (id, rect) in &rects_ref {
+            let got = rects.get(id).expect("missing pane rect from compute_geometry");
+            assert_eq!(got.x, rect.x);
+            assert_eq!(got.y, rect.y);
+            assert_eq!(got.width, rect.width);
+            assert_eq!(got.height, rect.height);
+        }
+
+        let mut keys: Vec<(u8, u16, u16, u16, u32, u32, u16, u16)> = dividers
+            .iter()
+            .map(|d| {
+                (
+                    match d.orientation {
+                        Orientation::Vertical => 0,
+                        Orientation::Horizontal => 1,
+                    },
+                    d.position,
+                    d.span_start,
+                    d.span_end,
+                    d.first_pane.0,
+                    d.second_pane.0,
+                    d.rect_start,
+                    d.rect_size,
+                )
+            })
+            .collect();
+        let mut keys_ref: Vec<(u8, u16, u16, u16, u32, u32, u16, u16)> =
+            dividers_ref
+                .iter()
+                .map(|d| {
+                    (
+                        match d.orientation {
+                            Orientation::Vertical => 0,
+                            Orientation::Horizontal => 1,
+                        },
+                        d.position,
+                        d.span_start,
+                        d.span_end,
+                        d.first_pane.0,
+                        d.second_pane.0,
+                        d.rect_start,
+                        d.rect_size,
+                    )
+                })
+                .collect();
+        keys.sort();
+        keys_ref.sort();
+        assert_eq!(keys, keys_ref);
+    }
+
     // ── set_split_ratio ───────────────────────────────────────────────────────
 
     #[test]
@@ -999,6 +1215,26 @@ mod tests {
         assert!(
             first_w >= 28 && first_w <= 32,
             "width should be near 30 for ratio 0.3, got {first_w}"
+        );
+    }
+
+    #[test]
+    fn split_handle_updates_target_split_ratio() {
+        let mut layout = Layout::new();
+        layout.split(Orientation::Vertical);
+        let dividers = layout.compute_dividers(100, 40);
+        let d = dividers[0];
+
+        let handle = layout
+            .split_handle(d.first_pane, d.second_pane)
+            .expect("split handle should exist");
+        assert!(layout.set_split_ratio_with_handle(&handle, 0.7));
+
+        let rects = layout.compute_rects(100, 40);
+        let first_w = rects[&d.first_pane].width;
+        assert!(
+            first_w >= 68 && first_w <= 72,
+            "width should be near 70 for ratio 0.7, got {first_w}"
         );
     }
 }

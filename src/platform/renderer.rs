@@ -1,4 +1,5 @@
 use std::io::{self, Stdout};
+use std::collections::HashMap;
 use std::time::Instant;
 
 use alacritty_terminal::index::{Column, Line, Point};
@@ -26,6 +27,29 @@ const BRAILLE_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '�
 
 /// Start time used to derive animation frame from wall clock.
 static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct PaneRenderKey {
+    content_version: u64,
+    width: u16,
+    height: u16,
+    sel_range: Option<((u16, u16), (u16, u16))>,
+    ready: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PaneRenderCache {
+    key: PaneRenderKey,
+    content: Option<Vec<TuiLine<'static>>>,
+}
+
+#[derive(Default)]
+pub struct RenderCache {
+    pane_content: HashMap<PaneId, PaneRenderCache>,
+    pane_titles: HashMap<PaneId, (u64, Option<String>)>,
+    cheatsheet_entries: Option<Vec<(String, &'static str)>>,
+    cheatsheet_layouts: HashMap<usize, CheatsheetGridLayout>,
+}
 
 /// Enter raw mode and alternate screen, return a ratatui Terminal.
 pub fn init_terminal() -> Result<Tui> {
@@ -55,6 +79,7 @@ pub fn restore_terminal(tui: &mut Tui) -> Result<()> {
 /// Render the full tpane UI: one bordered block per pane, content from the Term grid.
 pub fn render(
     tui: &mut Tui,
+    cache: &mut RenderCache,
     layout: &Layout,
     panes: &std::collections::HashMap<PaneId, PaneState>,
     keymap: &KeyMap,
@@ -67,12 +92,14 @@ pub fn render(
 
         // Reserve space for cheatsheet bar when prefix is active.
         let cheatsheet_height: u16 = if prefix_active {
-            cheatsheet_bar_height(w, keymap)
+            cheatsheet_bar_height_cached(cache, w, keymap)
         } else {
             0
         };
         let pane_area_h = h.saturating_sub(cheatsheet_height);
-        let rects = layout.compute_rects(w, pane_area_h);
+        let (rects, dividers) = layout.compute_geometry(w, pane_area_h);
+        cache.pane_content.retain(|id, _| rects.contains_key(id));
+        cache.pane_titles.retain(|id, _| rects.contains_key(id));
 
         for (pane_id, rect) in &rects {
             // Skip panes with no visible area (can happen during resize).
@@ -95,10 +122,22 @@ pub fn render(
             };
 
             // Use the terminal's OSC title if set, otherwise "tpane".
-            let pane_title = panes
-                .get(pane_id)
-                .map(|p| p.title())
-                .filter(|t| !t.is_empty());
+            let pane_title = panes.get(pane_id).and_then(|pane| {
+                let title_version = pane.title_version();
+                match cache.pane_titles.get(pane_id) {
+                    Some((cached_version, cached_title)) if *cached_version == title_version => {
+                        cached_title.clone()
+                    }
+                    _ => {
+                        let title = pane.title();
+                        let cached = if title.is_empty() { None } else { Some(title) };
+                        cache
+                            .pane_titles
+                            .insert(*pane_id, (title_version, cached.clone()));
+                        cached
+                    }
+                }
+            });
             let title = if is_active {
                 match &pane_title {
                     Some(t) => format!(" {} [active] ", t),
@@ -125,15 +164,40 @@ pub fn render(
             }
 
             if let Some(pane) = panes.get(pane_id) {
-                if term_has_visible_content(pane, inner.width, inner.height) {
-                    // Get selection range for this pane (if any).
-                    let sel_range = selection
-                        .filter(|s| s.pane_id == *pane_id && !s.is_empty())
-                        .map(|s| s.ordered());
+                // Get selection range for this pane (if any).
+                let sel_range = selection
+                    .filter(|s| s.pane_id == *pane_id && !s.is_empty())
+                    .map(|s| s.ordered());
+                let key = PaneRenderKey {
+                    content_version: pane.content_version(),
+                    width: inner.width,
+                    height: inner.height,
+                    sel_range,
+                    ready: pane.is_ready(),
+                };
+                let content = match cache.pane_content.get(pane_id) {
+                    Some(cached) if cached.key == key => cached.content.as_ref(),
+                    _ => {
+                        let built = term_to_lines(pane, inner.width, inner.height, sel_range);
+                        cache.pane_content.insert(
+                            *pane_id,
+                            PaneRenderCache {
+                                key,
+                                content: built,
+                            },
+                        );
+                        cache
+                            .pane_content
+                            .get(pane_id)
+                            .and_then(|cached| cached.content.as_ref())
+                    }
+                };
 
-                    let content = term_to_text(pane, inner.width, inner.height, sel_range);
-                    let para = Paragraph::new(content);
-                    frame.render_widget(para, inner);
+                if let Some(lines) = content {
+                    let buf = frame.buffer_mut();
+                    for (row, line) in lines.iter().take(inner.height as usize).enumerate() {
+                        buf.set_line(inner.x, inner.y + row as u16, line, inner.width);
+                    }
                 } else {
                     // Braille loading throbber for panes still spawning.
                     let start = START.get_or_init(Instant::now);
@@ -161,11 +225,10 @@ pub fn render(
 
         // Render cheatsheet bar at the bottom.
         if prefix_active && cheatsheet_height > 0 && h > cheatsheet_height {
-            render_cheatsheet(frame, keymap, w, h, cheatsheet_height);
+            render_cheatsheet(frame, cache, keymap, w, h, cheatsheet_height);
         }
 
         // Render subtle grab-handle dots on each divider so users know they're draggable.
-        let dividers = layout.compute_dividers(w, pane_area_h);
         let handle_style = Style::default().fg(Color::DarkGray);
         let buf = frame.buffer_mut();
         for div in &dividers {
@@ -201,10 +264,17 @@ pub fn cheatsheet_bar_height(w: u16, keymap: &KeyMap) -> u16 {
     (layout.rows as u16) + 2 // +2 for border
 }
 
+fn cheatsheet_bar_height_cached(cache: &mut RenderCache, w: u16, keymap: &KeyMap) -> u16 {
+    let inner_w = w.saturating_sub(2) as usize;
+    let layout = cheatsheet_layout_cached(cache, keymap, inner_w);
+    (layout.rows as u16) + 2
+}
+
 /// Draw a styled cheatsheet bar showing available keybindings.
 /// Renders bindings in an aligned grid that adapts to terminal width.
 fn render_cheatsheet(
     frame: &mut ratatui::Frame,
+    cache: &mut RenderCache,
     keymap: &KeyMap,
     w: u16,
     h: u16,
@@ -219,11 +289,10 @@ fn render_cheatsheet(
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
 
-    let entries = cheatsheet_bindings(keymap);
-
     // Available width inside the border (2 chars for left/right border).
     let inner_w = w.saturating_sub(2) as usize;
-    let layout = compute_cheatsheet_grid_layout(&entries, inner_w);
+    let layout = cheatsheet_layout_cached(cache, keymap, inner_w);
+    let entries = cheatsheet_entries_cached(cache, keymap).clone();
 
     // Build rows as an aligned grid.
     let mut lines: Vec<TuiLine> = Vec::new();
@@ -273,6 +342,32 @@ fn render_cheatsheet(
         .title(Span::styled(" Keybindings ", title_style));
     let para = Paragraph::new(Text::from(lines)).block(block);
     frame.render_widget(para, bar_rect);
+}
+
+fn cheatsheet_entries_cached<'a>(
+    cache: &'a mut RenderCache,
+    keymap: &KeyMap,
+) -> &'a Vec<(String, &'static str)> {
+    cache
+        .cheatsheet_entries
+        .get_or_insert_with(|| cheatsheet_bindings(keymap))
+}
+
+fn cheatsheet_layout_cached(
+    cache: &mut RenderCache,
+    keymap: &KeyMap,
+    inner_w: usize,
+) -> CheatsheetGridLayout {
+    if let Some(layout) = cache.cheatsheet_layouts.get(&inner_w) {
+        return layout.clone();
+    }
+
+    let layout = {
+        let entries = cheatsheet_entries_cached(cache, keymap);
+        compute_cheatsheet_grid_layout(entries, inner_w)
+    };
+    cache.cheatsheet_layouts.insert(inner_w, layout.clone());
+    layout
 }
 
 fn cheatsheet_bindings(keymap: &KeyMap) -> Vec<(String, &'static str)> {
@@ -430,57 +525,47 @@ fn key_chord_to_display(chord: &KeyChord) -> String {
     parts.join("+")
 }
 
-/// Check if the terminal grid has any visible (non-space, non-null) content.
-/// Used to decide whether to show the loading throbber or real terminal content.
-fn term_has_visible_content(pane: &PaneState, width: u16, height: u16) -> bool {
-    let term = pane.term.lock();
-    let content: RenderableContent<'_> = term.renderable_content();
-    let rows = height as usize;
-    let cols = width as usize;
-
-    for row in 0..rows {
-        for col in 0..cols {
-            let point = Point::new(
-                Line(row as i32 - content.display_offset as i32),
-                Column(col),
-            );
-            let c = term.grid()[point].c;
-            if c != '\0' && c != ' ' {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Convert the alacritty Term grid into ratatui Text for display.
 /// If `sel_range` is Some, cells within the selection are rendered with inverted colors.
-fn term_to_text(
+fn term_to_lines(
     pane: &PaneState,
     width: u16,
     height: u16,
     sel_range: Option<((u16, u16), (u16, u16))>,
-) -> Text<'static> {
-    let term = pane.term.lock();
-    let content: RenderableContent<'_> = term.renderable_content();
-
+) -> Option<Vec<TuiLine<'static>>> {
     let rows = height as usize;
     let cols = width as usize;
-    let mut lines: Vec<TuiLine<'static>> = Vec::with_capacity(rows);
+    let snapshot = {
+        let term = pane.term.lock();
+        let content: RenderableContent<'_> = term.renderable_content();
+        let mut rows_snapshot: Vec<Vec<Cell>> = Vec::with_capacity(rows);
+        for row in 0..rows {
+            let mut row_cells: Vec<Cell> = Vec::with_capacity(cols);
+            for col in 0..cols {
+                let point = Point::new(
+                    Line(row as i32 - content.display_offset as i32),
+                    Column(col),
+                );
+                row_cells.push(term.grid()[point].clone());
+            }
+            rows_snapshot.push(row_cells);
+        }
+        rows_snapshot
+    };
 
-    for row in 0..rows {
+    let mut lines: Vec<TuiLine<'static>> = Vec::with_capacity(rows);
+    let mut has_visible_content = false;
+
+    for (row, row_cells) in snapshot.iter().enumerate() {
         let mut spans: Vec<Span<'static>> = Vec::new();
         let mut current_text = String::new();
         let mut current_style = Style::default();
 
-        for col in 0..cols {
-            let point = Point::new(
-                Line(row as i32 - content.display_offset as i32),
-                Column(col),
-            );
-            // Access cell via the grid directly
-            let cell = term.grid()[point].clone();
-            let (ch, mut style) = cell_to_span(&cell);
+        for (col, cell) in row_cells.iter().enumerate() {
+            let (ch, mut style) = cell_to_span(cell);
+            if ch != ' ' {
+                has_visible_content = true;
+            }
 
             // Apply selection highlight (inverted colors).
             if let Some(((sc, sr), (ec, er))) = sel_range {
@@ -507,8 +592,7 @@ fn term_to_text(
                 current_text.push(ch);
             } else {
                 if !current_text.is_empty() {
-                    spans.push(Span::styled(current_text.clone(), current_style));
-                    current_text.clear();
+                    spans.push(Span::styled(std::mem::take(&mut current_text), current_style));
                 }
                 current_text.push(ch);
                 current_style = style;
@@ -520,7 +604,11 @@ fn term_to_text(
         lines.push(TuiLine::from(spans));
     }
 
-    Text::from(lines)
+    if has_visible_content {
+        Some(lines)
+    } else {
+        None
+    }
 }
 
 /// Convert an alacritty cell to a (char, ratatui Style) pair.

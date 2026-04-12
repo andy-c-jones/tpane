@@ -1326,6 +1326,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn divider_drag_same_cell_skips_redundant_resizes() {
+        let (mut app, factory, mut clip) = default_app();
+        prefix_then(
+            &mut app,
+            &factory,
+            &mut clip,
+            KeyCode::Right,
+            KeyModifiers::CONTROL,
+        );
+
+        let (w, h) = TERM_SIZE;
+        let dividers = app.layout.compute_dividers(w, h);
+        let div = &dividers[0];
+        let row = div.span_start + 1;
+        let drag_col = div.position + 3;
+
+        let total_resizes = |app: &App<HeadlessPaneBackend>| -> usize {
+            app.panes.values().map(|p| p.resize_log.len()).sum()
+        };
+
+        app.process_event(mouse_click(div.position, row), &factory, &mut clip)
+            .unwrap();
+        let before = total_resizes(&app);
+
+        app.process_event(mouse_drag(drag_col, row), &factory, &mut clip)
+            .unwrap();
+        let after_first_drag = total_resizes(&app);
+        assert!(after_first_drag > before);
+
+        app.process_event(mouse_drag(drag_col, row), &factory, &mut clip)
+            .unwrap();
+        let after_second_drag_same_cell = total_resizes(&app);
+        assert_eq!(after_second_drag_same_cell, after_first_drag);
+    }
+
     // ── apply_startup_commands with ratio ────────────────────────────────────
 
     #[test]

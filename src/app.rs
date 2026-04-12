@@ -6,7 +6,9 @@ use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEv
 
 use crate::core::commands::Command;
 use crate::core::keymap::KeyMap;
-use crate::core::layout::{Direction, DividerInfo, Layout, Orientation, PaneId, SplitPosition};
+use crate::core::layout::{
+    Direction, DividerInfo, Layout, Orientation, PaneId, SplitHandle, SplitPosition,
+};
 use crate::core::selection::Selection;
 use crate::platform::renderer::{cheatsheet_bar_height, key_event_to_bytes};
 use crate::traits::{AppEvent, Clipboard, EventSource, PaneBackend, PaneFactory, Renderer};
@@ -18,11 +20,14 @@ const RESIZE_STEP: f64 = 0.02;
 struct DividerDrag {
     first_pane: PaneId,
     second_pane: PaneId,
+    split_handle: Option<SplitHandle>,
     orientation: Orientation,
     /// Start of the split rect along the split axis (x for Vertical, y for Horizontal).
     rect_start: u16,
     /// Total size of the split rect along the split axis.
     rect_size: u16,
+    /// Last processed mouse coordinate along the split axis.
+    last_axis_coord: Option<u16>,
 }
 
 /// Central application state, generic over the pane backend.
@@ -86,36 +91,45 @@ impl<B: PaneBackend> App<B> {
         factory: &F,
         clipboard: &mut dyn Clipboard,
     ) -> Result<()> {
+        let mut needs_render = true;
         while self.running {
-            let show_bar = self.prefix_active && self.show_cheatsheet;
-            renderer.render(
-                &self.layout,
-                &self.panes,
-                &self.keymap,
-                self.terminal_size,
-                show_bar,
-                self.selection.as_ref(),
-            )?;
+            if needs_render {
+                let show_bar = self.prefix_active && self.show_cheatsheet;
+                renderer.render(
+                    &self.layout,
+                    &self.panes,
+                    &self.keymap,
+                    self.terminal_size,
+                    show_bar,
+                    self.selection.as_ref(),
+                )?;
+                needs_render = false;
+            }
 
             match events.next_event(Duration::from_millis(16))? {
                 Some(AppEvent::Key(key)) if key.kind == KeyEventKind::Press => {
-                    self.handle_key(key, factory, clipboard)?;
+                    needs_render |= self.handle_key(key, factory, clipboard)?;
                 }
                 // Repeat events are only forwarded to direct bindings and raw PTY input;
                 // prefix-key and global-shortcut handling is guarded inside handle_key.
                 Some(AppEvent::Key(key)) if key.kind == KeyEventKind::Repeat => {
-                    self.handle_key_repeat(key, factory)?;
+                    needs_render |= self.handle_key_repeat(key, factory)?;
                 }
                 Some(AppEvent::Mouse(mouse)) => {
                     self.handle_mouse(mouse, clipboard);
+                    needs_render = true;
                 }
                 Some(AppEvent::Resize(w, h)) => {
                     self.handle_resize(w, h);
+                    needs_render = true;
                 }
-                Some(AppEvent::PaneData { .. }) => {}
+                Some(AppEvent::PaneData { .. }) => {
+                    needs_render = true;
+                }
                 Some(AppEvent::PaneExit { pane_id }) => {
                     if self.panes.contains_key(&pane_id) {
                         self.close_pane(pane_id);
+                        needs_render = true;
                     }
                 }
                 _ => {}
@@ -129,10 +143,10 @@ impl<B: PaneBackend> App<B> {
         key: crossterm::event::KeyEvent,
         factory: &F,
         clipboard: &mut dyn Clipboard,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // Global shortcuts that work regardless of prefix mode.
         if self.handle_global_shortcuts(&key, clipboard)? {
-            return Ok(());
+            return Ok(true);
         }
 
         if self.prefix_active {
@@ -140,19 +154,19 @@ impl<B: PaneBackend> App<B> {
             if let Some(cmd) = self.keymap.lookup_prefix(&key).cloned() {
                 self.dispatch(cmd, factory)?;
             }
-            return Ok(());
+            return Ok(true);
         }
 
         // Check for prefix key.
         if self.keymap.is_prefix(&key) {
             self.prefix_active = true;
-            return Ok(());
+            return Ok(true);
         }
 
         // Check direct bindings (holdable; work without prefix key).
         if let Some(cmd) = self.keymap.lookup_direct(&key).cloned() {
             self.dispatch(cmd, factory)?;
-            return Ok(());
+            return Ok(true);
         }
 
         // Forward raw bytes to the active pane.
@@ -160,8 +174,9 @@ impl<B: PaneBackend> App<B> {
             if let Some(pane) = self.panes.get_mut(&self.layout.active) {
                 pane.write_input(&bytes)?;
             }
+            return Ok(false);
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Handle key-repeat events: only direct bindings and raw PTY forwarding fire on repeat.
@@ -170,11 +185,11 @@ impl<B: PaneBackend> App<B> {
         &mut self,
         key: crossterm::event::KeyEvent,
         factory: &F,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // Direct bindings fire on repeat so they can be held to move edges continuously.
         if let Some(cmd) = self.keymap.lookup_direct(&key).cloned() {
             self.dispatch(cmd, factory)?;
-            return Ok(());
+            return Ok(true);
         }
 
         // Forward raw bytes to the active pane (e.g. holding a character key).
@@ -182,8 +197,9 @@ impl<B: PaneBackend> App<B> {
             if let Some(pane) = self.panes.get_mut(&self.layout.active) {
                 pane.write_input(&bytes)?;
             }
+            return Ok(false);
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Handle global shortcuts (Ctrl+Shift+C/V) that work in any mode.
@@ -463,8 +479,6 @@ impl<B: PaneBackend> App<B> {
             0
         };
         let pane_area_h = h.saturating_sub(cheatsheet_h);
-        let rects = self.layout.compute_rects(w, pane_area_h);
-        let dividers = self.layout.compute_dividers(w, pane_area_h);
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -474,18 +488,26 @@ impl<B: PaneBackend> App<B> {
                 self.resize_drag = None;
 
                 // Check if the click lands on a divider first.
+                let dividers = self.layout.compute_dividers(w, pane_area_h);
                 if let Some(div) = Self::find_divider_at(&dividers, mouse.column, mouse.row) {
+                    let axis_coord = match div.orientation {
+                        Orientation::Vertical => mouse.column,
+                        Orientation::Horizontal => mouse.row,
+                    };
                     self.resize_drag = Some(DividerDrag {
                         first_pane: div.first_pane,
                         second_pane: div.second_pane,
+                        split_handle: self.layout.split_handle(div.first_pane, div.second_pane),
                         orientation: div.orientation,
                         rect_start: div.rect_start,
                         rect_size: div.rect_size,
+                        last_axis_coord: Some(axis_coord),
                     });
                     return;
                 }
 
                 // Find which pane was clicked.
+                let rects = self.layout.compute_rects(w, pane_area_h);
                 if let Some((pane_id, rect)) = Self::find_pane_at(&rects, mouse.column, mouse.row) {
                     self.layout.set_active(pane_id);
 
@@ -514,20 +536,26 @@ impl<B: PaneBackend> App<B> {
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 // Divider drag: update the split ratio.
-                if let Some(ref drag) = self.resize_drag {
+                if let Some(ref mut drag) = self.resize_drag {
                     if drag.rect_size > 0 {
-                        let new_ratio = match drag.orientation {
-                            Orientation::Vertical => {
-                                (mouse.column.saturating_sub(drag.rect_start)) as f64
-                                    / drag.rect_size as f64
-                            }
-                            Orientation::Horizontal => {
-                                (mouse.row.saturating_sub(drag.rect_start)) as f64
-                                    / drag.rect_size as f64
-                            }
+                        let axis_coord = match drag.orientation {
+                            Orientation::Vertical => mouse.column,
+                            Orientation::Horizontal => mouse.row,
                         };
-                        let (fp, sp) = (drag.first_pane, drag.second_pane);
-                        self.layout.set_split_ratio(fp, sp, new_ratio);
+
+                        if drag.last_axis_coord == Some(axis_coord) {
+                            return;
+                        }
+                        drag.last_axis_coord = Some(axis_coord);
+
+                        let new_ratio =
+                            (axis_coord.saturating_sub(drag.rect_start)) as f64 / drag.rect_size as f64;
+                        if let Some(handle) = drag.split_handle.as_ref() {
+                            self.layout.set_split_ratio_with_handle(handle, new_ratio);
+                        } else {
+                            let (fp, sp) = (drag.first_pane, drag.second_pane);
+                            self.layout.set_split_ratio(fp, sp, new_ratio);
+                        }
                         self.refresh_pane_sizes();
                     }
                     return;
@@ -535,6 +563,7 @@ impl<B: PaneBackend> App<B> {
 
                 self.dragging = true;
                 if let Some(ref mut sel) = self.selection {
+                    let rects = self.layout.compute_rects(w, pane_area_h);
                     if let Some(rect) = rects.get(&sel.pane_id) {
                         let inner_x = rect.x + 1;
                         let inner_y = rect.y + 1;
@@ -566,6 +595,7 @@ impl<B: PaneBackend> App<B> {
                     // Selection exists: copy it to clipboard.
                     self.copy_selection(clipboard);
                 } else {
+                    let rects = self.layout.compute_rects(w, pane_area_h);
                     // No selection: paste clipboard into the clicked pane.
                     let target = Self::find_pane_at(&rects, mouse.column, mouse.row)
                         .map(|(id, _)| id)
@@ -643,10 +673,10 @@ impl<B: PaneBackend> App<B> {
     ) -> Result<()> {
         match event {
             AppEvent::Key(key) if key.kind == KeyEventKind::Press => {
-                self.handle_key(key, factory, clipboard)?;
+                let _ = self.handle_key(key, factory, clipboard)?;
             }
             AppEvent::Key(key) if key.kind == KeyEventKind::Repeat => {
-                self.handle_key_repeat(key, factory)?;
+                let _ = self.handle_key_repeat(key, factory)?;
             }
             AppEvent::Mouse(mouse) => {
                 self.handle_mouse(mouse, clipboard);

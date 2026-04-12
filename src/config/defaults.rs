@@ -68,13 +68,11 @@ tpane.bind_direct("alt+shift+down",  "resize_down")
 --   tpane.split_right(0.7)     -- left keeps 70%, right pane gets 30%
 -- end)
 
--- 3-column layout (50% | 25% | 25%):
--- Drag the dividers with the mouse or use Alt+Shift+Arrows after startup
--- to adjust proportions (e.g. to achieve a wide center column).
+-- 3-column layout (25% | 50% | 25%):
 --
 -- tpane.on_startup(function()
---   tpane.split_right()        -- creates left (50%) | right (50%)
---   tpane.split_right()        -- splits the right half into two equal quarters
+--   tpane.split_right(0.25)    -- left keeps 25%, right side is 75%
+--   tpane.split_right(2/3)     -- split the 75% right side into 50% | 25%
 -- end)
 
 -- 3-pane layout (one wide left column + two stacked rows on the right):

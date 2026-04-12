@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::sync::{Arc, mpsc};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::thread;
 use std::sync::mpsc::SyncSender;
 
@@ -18,11 +18,7 @@ use crate::core::layout::PaneId;
 
 #[derive(Debug)]
 pub enum PaneEvent {
-    Data {
-        pane_id: PaneId,
-        #[allow(dead_code)]
-        bytes: Vec<u8>,
-    },
+    Data { pane_id: PaneId },
     Exit {
         pane_id: PaneId,
     },
@@ -34,10 +30,11 @@ pub enum PaneEvent {
 #[derive(Clone)]
 pub struct TpaneEventListener {
     #[allow(dead_code)]
-    sender: mpsc::Sender<PaneEvent>,
+    sender: mpsc::SyncSender<PaneEvent>,
     #[allow(dead_code)]
     pane_id: PaneId,
     title: Arc<Mutex<String>>,
+    title_version: Arc<AtomicU64>,
     /// Used to write terminal responses (e.g. DA1 replies) back to the PTY.
     reply_tx: SyncSender<String>,
     /// Current pane size packed as `(cols as u32) << 16 | rows as u32`.
@@ -58,20 +55,21 @@ impl EventListener for TpaneEventListener {
         match event {
             TermEvent::Title(t) => {
                 *self.title.lock() = t;
+                self.title_version.fetch_add(1, Ordering::Relaxed);
             }
             TermEvent::ResetTitle => {
                 self.title.lock().clear();
+                self.title_version.fetch_add(1, Ordering::Relaxed);
             }
             // The terminal emulator needs to send a response back to the shell
             // (e.g. the DA1 Primary Device Attribute reply that fish waits for).
             TermEvent::PtyWrite(s) => {
                 self.send_reply(s);
             }
-            // Color queries: call the provided formatter with a default black and
-            // write the result back so shells/programs don't stall waiting.
-            TermEvent::ColorRequest(_, formatter) => {
-                let default_color = alacritty_terminal::vte::ansi::Rgb { r: 0, g: 0, b: 0 };
-                self.send_reply(formatter(default_color));
+            // Color queries: return terminal-like defaults so programs can adapt
+            // to a sensible palette instead of assuming pure black.
+            TermEvent::ColorRequest(index, formatter) => {
+                self.send_reply(formatter(default_color_for_query(index)));
             }
             // Text-area size queries: respond with the actual pane dimensions.
             TermEvent::TextAreaSizeRequest(formatter) => {
@@ -119,6 +117,10 @@ pub struct PaneState {
     title: Arc<Mutex<String>>,
     /// Shared pane size for the event listener (kept in sync with cols/rows).
     packed_size: Arc<AtomicU32>,
+    /// Monotonic counter incremented when terminal content might have changed.
+    content_version: Arc<AtomicU64>,
+    /// Monotonic counter incremented when pane title changes.
+    title_version: Arc<AtomicU64>,
 }
 
 impl PaneState {
@@ -128,7 +130,7 @@ impl PaneState {
         id: PaneId,
         cols: u16,
         rows: u16,
-        event_tx: mpsc::Sender<PaneEvent>,
+        event_tx: mpsc::SyncSender<PaneEvent>,
     ) -> Result<Self> {
         // Bounded channel for responses the terminal emulator needs to send back
         // to the shell (e.g. DA1 Primary Device Attribute replies).
@@ -136,6 +138,7 @@ impl PaneState {
 
         // Shared size for accurate TextAreaSizeRequest replies; updated on resize.
         let packed_size = Arc::new(AtomicU32::new(pack_size(cols, rows)));
+        let content_version = Arc::new(AtomicU64::new(0));
 
         // Create the alacritty Term immediately (cheap, no I/O).
         let term_config = TermConfig {
@@ -143,10 +146,12 @@ impl PaneState {
             ..TermConfig::default()
         };
         let title: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let title_version = Arc::new(AtomicU64::new(0));
         let listener = TpaneEventListener {
             sender: event_tx.clone(),
             pane_id: id,
             title: title.clone(),
+            title_version: title_version.clone(),
             reply_tx,
             packed_size: packed_size.clone(),
         };
@@ -168,6 +173,7 @@ impl PaneState {
             let buf_ref = input_buffer.clone();
             let resize_ref = pending_resize.clone();
             let ready_ref = ready.clone();
+            let content_version_ref = content_version.clone();
             thread::spawn(move || {
                 if let Err(e) = spawn_pty(
                     id,
@@ -179,6 +185,7 @@ impl PaneState {
                     buf_ref,
                     resize_ref,
                     ready_ref,
+                    content_version_ref,
                     reply_rx,
                 ) {
                     log::error!("Failed to spawn PTY for pane {:?}: {}", id, e);
@@ -197,6 +204,8 @@ impl PaneState {
             ready,
             title,
             packed_size,
+            content_version,
+            title_version,
         })
     }
 
@@ -204,8 +213,7 @@ impl PaneState {
     pub fn write_input(&mut self, bytes: &[u8]) -> Result<()> {
         let mut pty_guard = self.pty.lock();
         if let Some(ref mut handles) = *pty_guard {
-            handles.writer.write_all(bytes).context("writing to PTY")?;
-            handles.writer.flush().context("flushing PTY writer")
+            handles.writer.write_all(bytes).context("writing to PTY")
         } else {
             self.input_buffer.lock().extend_from_slice(bytes);
             Ok(())
@@ -214,6 +222,10 @@ impl PaneState {
 
     /// Resize the PTY and the Term when the pane geometry changes.
     pub fn resize(&mut self, cols: u16, rows: u16) {
+        if self.cols == cols && self.rows == rows {
+            return;
+        }
+
         self.cols = cols;
         self.rows = rows;
         self.packed_size.store(pack_size(cols, rows), Ordering::Relaxed);
@@ -222,6 +234,7 @@ impl PaneState {
             rows: rows as usize,
         };
         self.term.lock().resize(term_size);
+        self.content_version.fetch_add(1, Ordering::Relaxed);
 
         let mut pty_guard = self.pty.lock();
         if let Some(ref mut handles) = *pty_guard {
@@ -247,6 +260,16 @@ impl PaneState {
     /// Returns an empty string if no title has been set.
     pub fn title(&self) -> String {
         self.title.lock().clone()
+    }
+
+    /// Monotonic counter of terminal content mutations.
+    pub fn content_version(&self) -> u64 {
+        self.content_version.load(Ordering::Relaxed)
+    }
+
+    /// Monotonic counter of title mutations.
+    pub fn title_version(&self) -> u64 {
+        self.title_version.load(Ordering::Relaxed)
     }
 
     /// Extract text from the terminal grid between two pane-grid-local positions.
@@ -312,12 +335,13 @@ fn spawn_pty(
     id: PaneId,
     cols: u16,
     rows: u16,
-    event_tx: mpsc::Sender<PaneEvent>,
+    event_tx: mpsc::SyncSender<PaneEvent>,
     term: Arc<FairMutex<Term<TpaneEventListener>>>,
     pty_slot: Arc<Mutex<Option<PtyHandles>>>,
     input_buffer: Arc<Mutex<Vec<u8>>>,
     pending_resize: Arc<Mutex<Option<(u16, u16)>>>,
     ready: Arc<std::sync::atomic::AtomicBool>,
+    content_version: Arc<AtomicU64>,
     reply_rx: mpsc::Receiver<String>,
 ) -> Result<()> {
     let pty_system = NativePtySystem::default();
@@ -363,21 +387,17 @@ fn spawn_pty(
         let buffered: Vec<u8> = std::mem::take(&mut *input_buffer.lock());
         if !buffered.is_empty() {
             let _ = handles.writer.write_all(&buffered);
-            let _ = handles.writer.flush();
         }
         *pty_slot.lock() = Some(handles);
     }
 
     // Notify the UI that the PTY is connected (but shell may still be loading).
-    let _ = event_tx.send(PaneEvent::Data {
-        pane_id: id,
-        bytes: Vec::new(),
-    });
+    send_pane_data(&event_tx, id);
 
     // Reader loop — reads PTY output and feeds the term.
     // Mark ready on first output so the throbber shows until the shell renders.
     let mut processor = Processor::<StdSyncHandler>::new();
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; 65536];
     loop {
         match pty_reader.read(&mut buf) {
             Ok(0) | Err(_) => {
@@ -389,11 +409,16 @@ fn spawn_pty(
                     let mut t = term.lock();
                     processor.advance(&mut *t, &buf[..n]);
                 }
+                content_version.fetch_add(1, Ordering::Relaxed);
                 // Forward any terminal replies (e.g. DA1 response) back to the shell.
+                let mut replies = String::new();
                 while let Ok(reply) = reply_rx.try_recv() {
+                    replies.push_str(&reply);
+                }
+                if !replies.is_empty() {
                     let mut guard = pty_slot.lock();
                     if let Some(ref mut h) = *guard {
-                        let _ = h.writer.write_all(reply.as_bytes());
+                        let _ = h.writer.write_all(replies.as_bytes());
                         let _ = h.writer.flush();
                     }
                 }
@@ -401,10 +426,7 @@ fn spawn_pty(
                 if !ready.load(std::sync::atomic::Ordering::Relaxed) {
                     ready.store(true, std::sync::atomic::Ordering::Release);
                 }
-                let _ = event_tx.send(PaneEvent::Data {
-                    pane_id: id,
-                    bytes: buf[..n].to_vec(),
-                });
+                send_pane_data(&event_tx, id);
             }
         }
     }
@@ -446,4 +468,46 @@ fn shell_command() -> String {
 /// Pack (cols, rows) into a single u32 for lock-free sharing with the event listener.
 fn pack_size(cols: u16, rows: u16) -> u32 {
     (cols as u32) << 16 | (rows as u32)
+}
+
+fn default_color_for_query(index: usize) -> alacritty_terminal::vte::ansi::Rgb {
+    use alacritty_terminal::vte::ansi::Rgb;
+
+    // xterm-like defaults for ANSI base + dynamic foreground/background/cursor.
+    const ANSI_BASE: [Rgb; 16] = [
+        Rgb { r: 0x00, g: 0x00, b: 0x00 }, // black
+        Rgb { r: 0xcd, g: 0x00, b: 0x00 }, // red
+        Rgb { r: 0x00, g: 0xcd, b: 0x00 }, // green
+        Rgb { r: 0xcd, g: 0xcd, b: 0x00 }, // yellow
+        Rgb { r: 0x00, g: 0x00, b: 0xee }, // blue
+        Rgb { r: 0xcd, g: 0x00, b: 0xcd }, // magenta
+        Rgb { r: 0x00, g: 0xcd, b: 0xcd }, // cyan
+        Rgb { r: 0xe5, g: 0xe5, b: 0xe5 }, // white
+        Rgb { r: 0x7f, g: 0x7f, b: 0x7f }, // bright black
+        Rgb { r: 0xff, g: 0x00, b: 0x00 }, // bright red
+        Rgb { r: 0x00, g: 0xff, b: 0x00 }, // bright green
+        Rgb { r: 0xff, g: 0xff, b: 0x00 }, // bright yellow
+        Rgb { r: 0x5c, g: 0x5c, b: 0xff }, // bright blue
+        Rgb { r: 0xff, g: 0x00, b: 0xff }, // bright magenta
+        Rgb { r: 0x00, g: 0xff, b: 0xff }, // bright cyan
+        Rgb { r: 0xff, g: 0xff, b: 0xff }, // bright white
+    ];
+
+    match index {
+        0..=15 => ANSI_BASE[index],
+        256 => Rgb { r: 0xd0, g: 0xd0, b: 0xd0 }, // foreground
+        257 => Rgb { r: 0x1e, g: 0x1e, b: 0x1e }, // background
+        258 => Rgb { r: 0xff, g: 0xff, b: 0xff }, // cursor
+        267 => Rgb { r: 0xff, g: 0xff, b: 0xff }, // bright foreground
+        268 => Rgb { r: 0x1e, g: 0x1e, b: 0x1e }, // dim background
+        _ => Rgb { r: 0xd0, g: 0xd0, b: 0xd0 },
+    }
+}
+
+fn send_pane_data(event_tx: &mpsc::SyncSender<PaneEvent>, pane_id: PaneId) {
+    match event_tx.try_send(PaneEvent::Data { pane_id }) {
+        Ok(_) => {}
+        Err(mpsc::TrySendError::Full(_)) => {}
+        Err(mpsc::TrySendError::Disconnected(_)) => {}
+    }
 }
