@@ -164,6 +164,31 @@ pub fn render(
         if prefix_active && cheatsheet_height > 0 && h > cheatsheet_height {
             render_cheatsheet(frame, w, h, cheatsheet_height);
         }
+
+        // Render subtle grab-handle dots on each divider so users know they're draggable.
+        let dividers = layout.compute_dividers(w, pane_area_h);
+        let handle_style = Style::default().fg(Color::DarkGray);
+        let buf = frame.buffer_mut();
+        for div in &dividers {
+            match div.orientation {
+                crate::core::layout::Orientation::Vertical => {
+                    // Paint a thin vertical line of '│' in the gap column.
+                    for row in div.span_start..div.span_end {
+                        buf[(div.position, row)]
+                            .set_symbol("│")
+                            .set_style(handle_style);
+                    }
+                }
+                crate::core::layout::Orientation::Horizontal => {
+                    // Paint a thin horizontal line of '─' in the gap row.
+                    for col in div.span_start..div.span_end {
+                        buf[(col, div.position)]
+                            .set_symbol("─")
+                            .set_style(handle_style);
+                    }
+                }
+            }
+        }
     })?;
     Ok(())
 }

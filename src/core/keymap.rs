@@ -83,6 +83,10 @@ pub struct KeyMap {
     pub prefix_key: KeyChord,
     /// Bindings that activate after the prefix key.
     prefix_bindings: HashMap<KeyChord, Command>,
+    /// Bindings that fire directly (without the prefix key).
+    /// These are checked before forwarding input to the active pane,
+    /// so they can be held down for continuous repeated actions (e.g. resize).
+    direct_bindings: HashMap<KeyChord, Command>,
 }
 
 impl KeyMap {
@@ -90,11 +94,17 @@ impl KeyMap {
         Self {
             prefix_key: KeyChord::parse("ctrl+b").unwrap(),
             prefix_bindings: HashMap::new(),
+            direct_bindings: HashMap::new(),
         }
     }
 
     pub fn bind(&mut self, chord: KeyChord, command: Command) {
         self.prefix_bindings.insert(chord, command);
+    }
+
+    /// Register a direct (non-prefix) binding.
+    pub fn bind_direct(&mut self, chord: KeyChord, command: Command) {
+        self.direct_bindings.insert(chord, command);
     }
 
     /// Check if a key event matches the prefix key.
@@ -106,6 +116,12 @@ impl KeyMap {
     pub fn lookup_prefix(&self, event: &KeyEvent) -> Option<&Command> {
         let chord = KeyChord::from_event(event);
         self.prefix_bindings.get(&chord)
+    }
+
+    /// Look up a command in the direct bindings (checked on every key event).
+    pub fn lookup_direct(&self, event: &KeyEvent) -> Option<&Command> {
+        let chord = KeyChord::from_event(event);
+        self.direct_bindings.get(&chord)
     }
 
     /// Legacy lookup that checks prefix bindings directly (for tests).
@@ -138,6 +154,20 @@ impl Default for KeyMap {
                 km.bind(chord, cmd.clone());
             }
         }
+
+        // Direct resize bindings: Alt+Shift+Arrow (no prefix needed; holdable).
+        let direct_defaults: &[(&str, Command)] = &[
+            ("alt+shift+left",  Command::ResizeLeft),
+            ("alt+shift+right", Command::ResizeRight),
+            ("alt+shift+up",    Command::ResizeUp),
+            ("alt+shift+down",  Command::ResizeDown),
+        ];
+        for (chord_str, cmd) in direct_defaults {
+            if let Some(chord) = KeyChord::parse(chord_str) {
+                km.bind_direct(chord, cmd.clone());
+            }
+        }
+
         km
     }
 }
@@ -318,5 +348,40 @@ mod tests {
         km.bind(chord, Command::Quit);
         let event = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::empty());
         assert_eq!(km.lookup_prefix(&event), Some(&Command::Quit));
+    }
+
+    // ── direct bindings ──────────────────────────────────────────────────────
+
+    #[test]
+    fn default_direct_bindings_include_resize() {
+        let km = KeyMap::default();
+        let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
+        let cases: &[(KeyCode, Command)] = &[
+            (KeyCode::Left,  Command::ResizeLeft),
+            (KeyCode::Right, Command::ResizeRight),
+            (KeyCode::Up,    Command::ResizeUp),
+            (KeyCode::Down,  Command::ResizeDown),
+        ];
+        for (code, expected) in cases {
+            let event = KeyEvent::new(*code, alt_shift);
+            assert_eq!(km.lookup_direct(&event), Some(expected), "missing direct binding for {code:?}");
+        }
+    }
+
+    #[test]
+    fn direct_binding_does_not_appear_in_prefix_bindings() {
+        let km = KeyMap::default();
+        let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
+        let event = KeyEvent::new(KeyCode::Left, alt_shift);
+        assert!(km.lookup_prefix(&event).is_none());
+    }
+
+    #[test]
+    fn bind_direct_adds_custom_direct_binding() {
+        let mut km = KeyMap::new();
+        let chord = KeyChord::parse("alt+r").unwrap();
+        km.bind_direct(chord, Command::ResizeRight);
+        let event = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT);
+        assert_eq!(km.lookup_direct(&event), Some(&Command::ResizeRight));
     }
 }

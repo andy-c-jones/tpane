@@ -14,6 +14,10 @@ pub const DEFAULT_CONFIG: &str = r#"-- tpane configuration
 --   "close"            - close the active pane
 --   "focus_next"       - move focus to next pane
 --   "focus_prev"       - move focus to previous pane
+--   "resize_left"      - grow the active pane to the left
+--   "resize_right"     - grow the active pane to the right
+--   "resize_up"        - grow the active pane upward
+--   "resize_down"      - grow the active pane downward
 --   "quit"             - exit tpane
 
 -- Key bindings (applied after Ctrl+B prefix)
@@ -22,20 +26,47 @@ tpane.bind("ctrl+left",  "split_left")
 tpane.bind("ctrl+right", "split_right")
 tpane.bind("ctrl+up",    "split_up")
 tpane.bind("ctrl+down",  "split_down")
-tpane.bind("left",  "focus_prev")
-tpane.bind("right", "focus_next")
-tpane.bind("up",    "focus_prev")
-tpane.bind("down",  "focus_next")
+tpane.bind("left",  "focus_left")
+tpane.bind("right", "focus_right")
+tpane.bind("up",    "focus_up")
+tpane.bind("down",  "focus_down")
 tpane.bind("w", "close")
 tpane.bind("q", "quit")
 
--- Startup layout (optional)
+-- Resize bindings (direct keys — no prefix needed; hold to move edges slowly)
+-- Format: tpane.bind_direct("<modifiers+key>", "<command>")
+tpane.bind_direct("alt+shift+left",  "resize_left")
+tpane.bind_direct("alt+shift+right", "resize_right")
+tpane.bind_direct("alt+shift+up",    "resize_up")
+tpane.bind_direct("alt+shift+down",  "resize_down")
+
+-- You can also drag a divider with the mouse: left-click and drag the line
+-- between two panes to resize them interactively.
+
+-- ── Startup layouts ────────────────────────────────────────────────────────
 -- By default tpane opens with a single pane.
--- Uncomment and edit the block below to define a custom startup layout:
+-- Uncomment ONE of the blocks below to use a preset layout at startup.
+
+-- 2-column layout (two equal vertical panes side by side):
 --
 -- tpane.on_startup(function()
---   tpane.split_vertical()
---   tpane.split_horizontal()
+--   tpane.split_right()
+-- end)
+
+-- 3-column layout (25% | 50% | 25%):
+-- After splitting, adjust the ratios in ~/.config/tpane/main.lua or drag
+-- the dividers with the mouse to fine-tune.
+--
+-- tpane.on_startup(function()
+--   tpane.split_right()   -- creates left (50%) | right (50%)
+--   tpane.split_right()   -- splits right half: centre (50%) | far-right (50%)
+-- end)
+
+-- 3-pane layout (one wide left column + two stacked rows on the right):
+--
+-- tpane.on_startup(function()
+--   tpane.split_right()   -- left | right
+--   tpane.split_down()    -- right is split into top-right | bottom-right
 -- end)
 
 -- Settings

@@ -89,6 +89,16 @@ impl LuaConfig {
             };
             tpane_table.set("bind", bind_fn).map_err(lua_err)?;
 
+            // tpane.bind_direct(chord, command_name) — fires without the prefix key; holdable.
+            let bind_direct_fn = {
+                let b = bindings_ref.clone();
+                lua.create_function(move |_, (chord, cmd): (String, String)| {
+                    b.lock().push((format!("__direct__{}", chord), cmd));
+                    Ok(())
+                }).map_err(lua_err)?
+            };
+            tpane_table.set("bind_direct", bind_direct_fn).map_err(lua_err)?;
+
             // tpane.on_startup(fn) — accepted but startup logic is deferred via __startup__ keys
             let on_startup_fn = {
                 lua.create_function(move |_, f: LuaFunction| {
@@ -134,6 +144,16 @@ impl LuaConfig {
             if let Some(stripped) = chord_str.strip_prefix("__startup__") {
                 if let Some(cmd) = Command::from_name(stripped) {
                     startup_commands.push(cmd);
+                }
+            } else if let Some(stripped) = chord_str.strip_prefix("__direct__") {
+                if let Some(chord) = KeyChord::parse(stripped) {
+                    if let Some(cmd) = Command::from_name(cmd_name) {
+                        keymap.bind_direct(chord, cmd);
+                    } else {
+                        log::warn!("Unknown command '{}' in main.lua bind_direct call", cmd_name);
+                    }
+                } else {
+                    log::warn!("Could not parse key chord '{}' in main.lua bind_direct call", stripped);
                 }
             } else if let Some(chord) = KeyChord::parse(chord_str) {
                 if let Some(cmd) = Command::from_name(cmd_name) {

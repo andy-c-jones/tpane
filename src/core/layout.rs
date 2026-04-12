@@ -42,6 +42,26 @@ pub enum SplitPosition {
     After,
 }
 
+/// Information about a divider (the gap between two panes in a split).
+#[derive(Debug, Clone, Copy)]
+pub struct DividerInfo {
+    pub orientation: Orientation,
+    /// Column (Vertical) or row (Horizontal) where the divider gap is located.
+    pub position: u16,
+    /// Start of the span perpendicular to the divider (y for Vertical, x for Horizontal).
+    pub span_start: u16,
+    /// End (exclusive) of the span.
+    pub span_end: u16,
+    /// First leaf ID in the first (left/top) subtree — used to identify this split.
+    pub first_pane: PaneId,
+    /// First leaf ID in the second (right/bottom) subtree.
+    pub second_pane: PaneId,
+    /// Start of the split rect along the split axis (x for Vertical, y for Horizontal).
+    pub rect_start: u16,
+    /// Total size of the split rect along the split axis.
+    pub rect_size: u16,
+}
+
 /// The full layout state.
 pub struct Layout {
     pub root: Node,
@@ -150,6 +170,26 @@ impl Layout {
             self.focus_history.push(self.active);
             self.active = id;
         }
+    }
+
+    /// Collect all dividers (gaps between split panes) at the given terminal size.
+    pub fn compute_dividers(&self, width: u16, height: u16) -> Vec<DividerInfo> {
+        let mut dividers = Vec::new();
+        collect_dividers(&self.root, Rect { x: 0, y: 0, width, height }, &mut dividers);
+        dividers
+    }
+
+    /// Adjust the ratio of the innermost split (with `orientation`) that contains `pane_id`.
+    /// Positive `delta` makes the pane larger along that axis; negative makes it smaller.
+    /// The ratio is clamped to [0.05, 0.95].
+    pub fn adjust_pane_ratio(&mut self, pane_id: PaneId, orientation: Orientation, delta: f64) {
+        adjust_ratio_in(&mut self.root, pane_id, orientation, delta);
+    }
+
+    /// Set the ratio for the split identified by its two representative leaf pane IDs.
+    /// `new_ratio` is clamped to [0.05, 0.95].
+    pub fn set_split_ratio(&mut self, first_pane: PaneId, second_pane: PaneId, new_ratio: f64) {
+        set_ratio_for_split(&mut self.root, first_pane, second_pane, new_ratio);
     }
 
     /// Focus the nearest pane in the given direction using spatial geometry.
@@ -296,6 +336,110 @@ fn compute(node: &Node, rect: Rect, map: &mut HashMap<PaneId, Rect>) {
             let (r1, r2) = split_rect(rect, *orientation, *ratio);
             compute(first, r1, map);
             compute(second, r2, map);
+        }
+    }
+}
+
+/// Return the ID of the leftmost/topmost leaf in a subtree.
+fn first_leaf_id(node: &Node) -> PaneId {
+    match node {
+        Node::Leaf(id) => *id,
+        Node::Split { first, .. } => first_leaf_id(first),
+    }
+}
+
+/// Return true if `node` contains a leaf with `pane_id`.
+fn contains_pane(node: &Node, pane_id: PaneId) -> bool {
+    match node {
+        Node::Leaf(id) => *id == pane_id,
+        Node::Split { first, second, .. } => contains_pane(first, pane_id) || contains_pane(second, pane_id),
+    }
+}
+
+/// Collect all divider infos by recursively walking the layout tree.
+fn collect_dividers(node: &Node, rect: Rect, dividers: &mut Vec<DividerInfo>) {
+    match node {
+        Node::Leaf(_) => {}
+        Node::Split { orientation, ratio, first, second } => {
+            let (r1, r2) = split_rect(rect, *orientation, *ratio);
+
+            // A divider exists when there is a gap between the two child rects.
+            let has_divider = match orientation {
+                Orientation::Vertical => r2.x > r1.x + r1.width,
+                Orientation::Horizontal => r2.y > r1.y + r1.height,
+            };
+
+            if has_divider {
+                let info = match orientation {
+                    Orientation::Vertical => DividerInfo {
+                        orientation: Orientation::Vertical,
+                        position: r1.x + r1.width, // gap column
+                        span_start: rect.y,
+                        span_end: rect.y + rect.height,
+                        first_pane: first_leaf_id(first),
+                        second_pane: first_leaf_id(second),
+                        rect_start: rect.x,
+                        rect_size: rect.width,
+                    },
+                    Orientation::Horizontal => DividerInfo {
+                        orientation: Orientation::Horizontal,
+                        position: r1.y + r1.height, // gap row
+                        span_start: rect.x,
+                        span_end: rect.x + rect.width,
+                        first_pane: first_leaf_id(first),
+                        second_pane: first_leaf_id(second),
+                        rect_start: rect.y,
+                        rect_size: rect.height,
+                    },
+                };
+                dividers.push(info);
+            }
+
+            collect_dividers(first, r1, dividers);
+            collect_dividers(second, r2, dividers);
+        }
+    }
+}
+
+/// Adjust the ratio of the innermost split with `orientation` that contains `pane_id`.
+/// Recurses deepest-first so the innermost ancestor is adjusted.
+fn adjust_ratio_in(node: &mut Node, pane_id: PaneId, orientation: Orientation, delta: f64) -> bool {
+    match node {
+        Node::Leaf(_) => false,
+        Node::Split { orientation: o, ratio, first, second } => {
+            // Try to adjust a deeper split first (innermost wins).
+            let found = adjust_ratio_in(first, pane_id, orientation, delta)
+                || adjust_ratio_in(second, pane_id, orientation, delta);
+            if found {
+                return true;
+            }
+            // No deeper match: try this node.
+            if *o == orientation {
+                if contains_pane(first, pane_id) {
+                    *ratio = (*ratio + delta).clamp(0.05, 0.95);
+                    return true;
+                } else if contains_pane(second, pane_id) {
+                    *ratio = (*ratio - delta).clamp(0.05, 0.95);
+                    return true;
+                }
+            }
+            false
+        }
+    }
+}
+
+/// Set the ratio for the split whose first/second subtrees start with the given leaf IDs.
+fn set_ratio_for_split(node: &mut Node, first_pane: PaneId, second_pane: PaneId, new_ratio: f64) -> bool {
+    match node {
+        Node::Leaf(_) => false,
+        Node::Split { ratio, first, second, .. } => {
+            if first_leaf_id(first) == first_pane && first_leaf_id(second) == second_pane {
+                *ratio = new_ratio.clamp(0.05, 0.95);
+                true
+            } else {
+                set_ratio_for_split(first, first_pane, second_pane, new_ratio)
+                    || set_ratio_for_split(second, first_pane, second_pane, new_ratio)
+            }
         }
     }
 }
@@ -572,7 +716,7 @@ mod tests {
         let mut layout = Layout::new();
         let first = layout.active;           // pane 0
         let second = layout.split(Orientation::Vertical); // pane 1
-        let third = layout.split(Orientation::Horizontal); // pane 2
+        let _third = layout.split(Orientation::Horizontal); // pane 2
         // History: [0, 1], active: 2
         // Close pane 2 → should go to pane 1
         layout.close_active();
@@ -590,5 +734,122 @@ mod tests {
         // Close the new pane → should return to original
         layout.close_active();
         assert_eq!(layout.active, original);
+    }
+
+    // ── adjust_pane_ratio ────────────────────────────────────────────────────
+
+    #[test]
+    fn adjust_pane_ratio_grows_first_child() {
+        let mut layout = Layout::new();
+        let first = layout.active;
+        layout.split(Orientation::Vertical);
+        layout.active = first;
+        let rects_before = layout.compute_rects(100, 40);
+        let w_before = rects_before[&first].width;
+        layout.adjust_pane_ratio(first, Orientation::Vertical, 0.1);
+        let rects_after = layout.compute_rects(100, 40);
+        let w_after = rects_after[&first].width;
+        assert!(w_after > w_before, "first pane should be wider after positive delta");
+    }
+
+    #[test]
+    fn adjust_pane_ratio_grows_second_child() {
+        let mut layout = Layout::new();
+        let first = layout.active;
+        let second = layout.split(Orientation::Vertical);
+        let rects_before = layout.compute_rects(100, 40);
+        let w_before = rects_before[&second].width;
+        layout.adjust_pane_ratio(second, Orientation::Vertical, 0.1);
+        let rects_after = layout.compute_rects(100, 40);
+        let w_after = rects_after[&second].width;
+        assert!(w_after > w_before, "second pane should be wider after positive delta on it");
+        let _ = first;
+    }
+
+    #[test]
+    fn adjust_pane_ratio_clamps_to_min() {
+        let mut layout = Layout::new();
+        let first = layout.active;
+        layout.split(Orientation::Vertical);
+        layout.active = first;
+        for _ in 0..20 {
+            layout.adjust_pane_ratio(first, Orientation::Vertical, -0.2);
+        }
+        let rects = layout.compute_rects(100, 40);
+        // ratio should be clamped at 0.05
+        assert!(rects[&first].width >= 4, "ratio clamped: first pane should have minimal width");
+    }
+
+    #[test]
+    fn adjust_pane_ratio_no_effect_on_wrong_orientation() {
+        let mut layout = Layout::new();
+        let first = layout.active;
+        layout.split(Orientation::Vertical); // only a vertical split
+        layout.active = first;
+        let rects_before = layout.compute_rects(100, 40);
+        let h_before = rects_before[&first].height;
+        layout.adjust_pane_ratio(first, Orientation::Horizontal, 0.2);
+        let rects_after = layout.compute_rects(100, 40);
+        let h_after = rects_after[&first].height;
+        assert_eq!(h_before, h_after, "no horizontal split exists; height should be unchanged");
+    }
+
+    // ── compute_dividers ─────────────────────────────────────────────────────
+
+    #[test]
+    fn compute_dividers_single_pane_is_empty() {
+        let layout = Layout::new();
+        let dividers = layout.compute_dividers(100, 40);
+        assert!(dividers.is_empty());
+    }
+
+    #[test]
+    fn compute_dividers_vertical_split_yields_one_divider() {
+        let mut layout = Layout::new();
+        layout.split(Orientation::Vertical);
+        let dividers = layout.compute_dividers(100, 40);
+        assert_eq!(dividers.len(), 1);
+        let d = dividers[0];
+        assert_eq!(d.orientation, Orientation::Vertical);
+        assert!(d.position > 0 && d.position < 99, "divider column should be inside terminal");
+        assert_eq!(d.span_start, 0);
+        assert_eq!(d.span_end, 40);
+    }
+
+    #[test]
+    fn compute_dividers_horizontal_split_yields_one_divider() {
+        let mut layout = Layout::new();
+        layout.split(Orientation::Horizontal);
+        let dividers = layout.compute_dividers(100, 40);
+        assert_eq!(dividers.len(), 1);
+        let d = dividers[0];
+        assert_eq!(d.orientation, Orientation::Horizontal);
+        assert!(d.position > 0 && d.position < 39, "divider row should be inside terminal");
+    }
+
+    #[test]
+    fn compute_dividers_two_splits_yields_two_dividers() {
+        let mut layout = Layout::new();
+        layout.split(Orientation::Vertical);
+        layout.split(Orientation::Vertical);
+        let dividers = layout.compute_dividers(120, 40);
+        assert_eq!(dividers.len(), 2);
+    }
+
+    // ── set_split_ratio ───────────────────────────────────────────────────────
+
+    #[test]
+    fn set_split_ratio_updates_correct_split() {
+        let mut layout = Layout::new();
+        let first = layout.active;
+        layout.split(Orientation::Vertical);
+        let dividers = layout.compute_dividers(100, 40);
+        assert_eq!(dividers.len(), 1);
+        let d = dividers[0];
+        layout.set_split_ratio(d.first_pane, d.second_pane, 0.3);
+        let rects = layout.compute_rects(100, 40);
+        let first_w = rects[&first].width;
+        // ratio=0.3 → first_w ≈ 30
+        assert!(first_w >= 28 && first_w <= 32, "width should be near 30 for ratio 0.3, got {first_w}");
     }
 }
