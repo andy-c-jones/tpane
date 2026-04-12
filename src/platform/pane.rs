@@ -200,8 +200,7 @@ impl PaneState {
     pub fn write_input(&mut self, bytes: &[u8]) -> Result<()> {
         let mut pty_guard = self.pty.lock();
         if let Some(ref mut handles) = *pty_guard {
-            handles.writer.write_all(bytes).context("writing to PTY")?;
-            handles.writer.flush().context("flushing PTY writer")
+            handles.writer.write_all(bytes).context("writing to PTY")
         } else {
             self.input_buffer.lock().extend_from_slice(bytes);
             Ok(())
@@ -363,7 +362,6 @@ fn spawn_pty(
         let buffered: Vec<u8> = std::mem::take(&mut *input_buffer.lock());
         if !buffered.is_empty() {
             let _ = handles.writer.write_all(&buffered);
-            let _ = handles.writer.flush();
         }
         *pty_slot.lock() = Some(handles);
     }
@@ -393,7 +391,6 @@ fn spawn_pty(
                     let mut guard = pty_slot.lock();
                     if let Some(ref mut h) = *guard {
                         let _ = h.writer.write_all(reply.as_bytes());
-                        let _ = h.writer.flush();
                     }
                 }
                 // Mark ready on first real output from the shell.
