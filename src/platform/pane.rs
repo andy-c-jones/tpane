@@ -1,6 +1,8 @@
 use std::io::{Read, Write};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
+use std::sync::mpsc::SyncSender;
 
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
 use alacritty_terminal::sync::FairMutex;
@@ -36,6 +38,19 @@ pub struct TpaneEventListener {
     #[allow(dead_code)]
     pane_id: PaneId,
     title: Arc<Mutex<String>>,
+    /// Used to write terminal responses (e.g. DA1 replies) back to the PTY.
+    reply_tx: SyncSender<String>,
+    /// Current pane size packed as `(cols as u32) << 16 | rows as u32`.
+    /// Updated by PaneState::resize so TextAreaSizeRequest replies are accurate.
+    packed_size: Arc<AtomicU32>,
+}
+
+impl TpaneEventListener {
+    fn send_reply(&self, s: String) {
+        if let Err(e) = self.reply_tx.try_send(s) {
+            log::warn!("pane {:?}: failed to enqueue PTY reply: {}", self.pane_id, e);
+        }
+    }
 }
 
 impl EventListener for TpaneEventListener {
@@ -46,6 +61,28 @@ impl EventListener for TpaneEventListener {
             }
             TermEvent::ResetTitle => {
                 self.title.lock().clear();
+            }
+            // The terminal emulator needs to send a response back to the shell
+            // (e.g. the DA1 Primary Device Attribute reply that fish waits for).
+            TermEvent::PtyWrite(s) => {
+                self.send_reply(s);
+            }
+            // Color queries: call the provided formatter with a default black and
+            // write the result back so shells/programs don't stall waiting.
+            TermEvent::ColorRequest(_, formatter) => {
+                let default_color = alacritty_terminal::vte::ansi::Rgb { r: 0, g: 0, b: 0 };
+                self.send_reply(formatter(default_color));
+            }
+            // Text-area size queries: respond with the actual pane dimensions.
+            TermEvent::TextAreaSizeRequest(formatter) => {
+                let packed = self.packed_size.load(Ordering::Relaxed);
+                let size = alacritty_terminal::event::WindowSize {
+                    num_lines: (packed & 0xffff) as u16,
+                    num_cols: (packed >> 16) as u16,
+                    cell_width: 0,
+                    cell_height: 0,
+                };
+                self.send_reply(formatter(size));
             }
             _ => {}
         }
@@ -80,6 +117,8 @@ pub struct PaneState {
     ready: Arc<std::sync::atomic::AtomicBool>,
     /// Terminal title set via OSC escape sequences (e.g. by the shell or running program).
     title: Arc<Mutex<String>>,
+    /// Shared pane size for the event listener (kept in sync with cols/rows).
+    packed_size: Arc<AtomicU32>,
 }
 
 impl PaneState {
@@ -91,6 +130,13 @@ impl PaneState {
         rows: u16,
         event_tx: mpsc::Sender<PaneEvent>,
     ) -> Result<Self> {
+        // Bounded channel for responses the terminal emulator needs to send back
+        // to the shell (e.g. DA1 Primary Device Attribute replies).
+        let (reply_tx, reply_rx) = mpsc::sync_channel::<String>(64);
+
+        // Shared size for accurate TextAreaSizeRequest replies; updated on resize.
+        let packed_size = Arc::new(AtomicU32::new(pack_size(cols, rows)));
+
         // Create the alacritty Term immediately (cheap, no I/O).
         let term_config = TermConfig {
             kitty_keyboard: true,
@@ -101,6 +147,8 @@ impl PaneState {
             sender: event_tx.clone(),
             pane_id: id,
             title: title.clone(),
+            reply_tx,
+            packed_size: packed_size.clone(),
         };
         let term_size = TermSize {
             cols: cols as usize,
@@ -122,7 +170,16 @@ impl PaneState {
             let ready_ref = ready.clone();
             thread::spawn(move || {
                 if let Err(e) = spawn_pty(
-                    id, cols, rows, event_tx, term_arc, pty_ref, buf_ref, resize_ref, ready_ref,
+                    id,
+                    cols,
+                    rows,
+                    event_tx,
+                    term_arc,
+                    pty_ref,
+                    buf_ref,
+                    resize_ref,
+                    ready_ref,
+                    reply_rx,
                 ) {
                     log::error!("Failed to spawn PTY for pane {:?}: {}", id, e);
                 }
@@ -139,6 +196,7 @@ impl PaneState {
             pending_resize,
             ready,
             title,
+            packed_size,
         })
     }
 
@@ -158,6 +216,7 @@ impl PaneState {
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.cols = cols;
         self.rows = rows;
+        self.packed_size.store(pack_size(cols, rows), Ordering::Relaxed);
         let term_size = TermSize {
             cols: cols as usize,
             rows: rows as usize,
@@ -259,6 +318,7 @@ fn spawn_pty(
     input_buffer: Arc<Mutex<Vec<u8>>>,
     pending_resize: Arc<Mutex<Option<(u16, u16)>>>,
     ready: Arc<std::sync::atomic::AtomicBool>,
+    reply_rx: mpsc::Receiver<String>,
 ) -> Result<()> {
     let pty_system = NativePtySystem::default();
     let size = PtySize {
@@ -329,6 +389,14 @@ fn spawn_pty(
                     let mut t = term.lock();
                     processor.advance(&mut *t, &buf[..n]);
                 }
+                // Forward any terminal replies (e.g. DA1 response) back to the shell.
+                while let Ok(reply) = reply_rx.try_recv() {
+                    let mut guard = pty_slot.lock();
+                    if let Some(ref mut h) = *guard {
+                        let _ = h.writer.write_all(reply.as_bytes());
+                        let _ = h.writer.flush();
+                    }
+                }
                 // Mark ready on first real output from the shell.
                 if !ready.load(std::sync::atomic::Ordering::Relaxed) {
                     ready.store(true, std::sync::atomic::Ordering::Release);
@@ -373,4 +441,9 @@ fn shell_command() -> String {
     {
         std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
     }
+}
+
+/// Pack (cols, rows) into a single u32 for lock-free sharing with the event listener.
+fn pack_size(cols: u16, rows: u16) -> u32 {
+    (cols as u32) << 16 | (rows as u32)
 }
