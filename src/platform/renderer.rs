@@ -456,8 +456,8 @@ fn term_to_text(
                 Column(col),
             );
             // Access cell via the grid directly
-            let cell = term.grid()[point].clone();
-            let (ch, mut style) = cell_to_span(&cell);
+            let cell = &term.grid()[point];
+            let (ch, mut style) = cell_to_span(cell);
             if ch != ' ' {
                 has_visible_content = true;
             }
