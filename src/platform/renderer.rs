@@ -1,5 +1,5 @@
-use std::io::{self, Stdout};
 use std::collections::HashMap;
+use std::io::{self, Stdout};
 use std::time::Instant;
 
 use alacritty_terminal::index::{Column, Line, Point};
@@ -592,7 +592,10 @@ fn term_to_lines(
                 current_text.push(ch);
             } else {
                 if !current_text.is_empty() {
-                    spans.push(Span::styled(std::mem::take(&mut current_text), current_style));
+                    spans.push(Span::styled(
+                        std::mem::take(&mut current_text),
+                        current_style,
+                    ));
                 }
                 current_text.push(ch);
                 current_style = style;
@@ -794,6 +797,7 @@ mod tests {
     use super::*;
     use crate::core::commands::Command;
     use crate::core::keymap::{KeyChord, KeyMap};
+    use alacritty_terminal::vte::ansi::{Color as AColor, NamedColor, Rgb};
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     fn press(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
@@ -873,6 +877,15 @@ mod tests {
         let layout = compute_cheatsheet_grid_layout(&entries, 20);
         assert_eq!(layout.cols, 1);
         assert_eq!(layout.rows, entries.len());
+    }
+
+    #[test]
+    fn cheatsheet_grid_for_empty_entries_returns_single_empty_row() {
+        let entries: Vec<(String, &'static str)> = Vec::new();
+        let layout = compute_cheatsheet_grid_layout(&entries, 10);
+        assert_eq!(layout.cols, 1);
+        assert_eq!(layout.rows, 1);
+        assert_eq!(layout.col_widths, vec![0]);
     }
 
     // ── key_event_to_bytes ────────────────────────────────────────────────────
@@ -1022,5 +1035,77 @@ mod tests {
     fn plain_arrow_no_modifier() {
         let event = press(KeyCode::Left, KeyModifiers::empty());
         assert_eq!(key_event_to_bytes(&event), Some(vec![0x1b, b'[', b'D']));
+    }
+
+    #[test]
+    fn modifier_param_combines_shift_alt_ctrl() {
+        assert_eq!(modifier_param(KeyModifiers::empty()), 1);
+        assert_eq!(modifier_param(KeyModifiers::SHIFT), 2);
+        assert_eq!(modifier_param(KeyModifiers::ALT | KeyModifiers::CONTROL), 7);
+        assert_eq!(
+            modifier_param(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL),
+            8
+        );
+    }
+
+    #[test]
+    fn csi_and_tilde_helpers_encode_modifiers() {
+        assert_eq!(
+            csi_with_modifier(b'A', KeyModifiers::empty()),
+            vec![0x1b, b'[', b'A']
+        );
+        assert_eq!(
+            csi_with_modifier(b'D', KeyModifiers::ALT | KeyModifiers::CONTROL),
+            vec![0x1b, b'[', b'1', b';', b'7', b'D']
+        );
+        assert_eq!(
+            tilde_with_modifier(3, KeyModifiers::empty()),
+            vec![0x1b, b'[', b'3', b'~']
+        );
+        assert_eq!(
+            tilde_with_modifier(6, KeyModifiers::SHIFT),
+            vec![0x1b, b'[', b'6', b';', b'2', b'~']
+        );
+    }
+
+    #[test]
+    fn key_chord_display_formats_special_keys_and_picks_sorted_first() {
+        let left = KeyChord::parse("ctrl+left").unwrap();
+        let f5 = KeyChord::parse("f5").unwrap();
+        let space = KeyChord::parse("space").unwrap();
+
+        assert_eq!(key_chord_to_display(&left), "Ctrl+←");
+        assert_eq!(key_chord_to_display(&f5), "F5");
+        assert_eq!(key_chord_to_display(&space), "Space");
+
+        let first = display_key_for(vec![
+            KeyChord::parse("z").unwrap(),
+            KeyChord::parse("a").unwrap(),
+        ]);
+        assert_eq!(first.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn ansi_color_mapping_covers_named_spec_index_and_default_none() {
+        assert_eq!(
+            ansi_color_to_ratatui(AColor::Named(NamedColor::Blue)),
+            Some(Color::Blue)
+        );
+        assert_eq!(
+            ansi_color_to_ratatui(AColor::Spec(Rgb {
+                r: 10,
+                g: 20,
+                b: 30
+            })),
+            Some(Color::Rgb(10, 20, 30))
+        );
+        assert_eq!(
+            ansi_color_to_ratatui(AColor::Indexed(42)),
+            Some(Color::Indexed(42))
+        );
+        assert_eq!(
+            ansi_color_to_ratatui(AColor::Named(NamedColor::Foreground)),
+            None
+        );
     }
 }
