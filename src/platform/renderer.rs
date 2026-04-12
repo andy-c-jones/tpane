@@ -47,6 +47,8 @@ struct PaneRenderCache {
 pub struct RenderCache {
     pane_content: HashMap<PaneId, PaneRenderCache>,
     pane_titles: HashMap<PaneId, (u64, Option<String>)>,
+    cheatsheet_entries: Option<Vec<(String, &'static str)>>,
+    cheatsheet_layouts: HashMap<usize, CheatsheetGridLayout>,
 }
 
 /// Enter raw mode and alternate screen, return a ratatui Terminal.
@@ -90,7 +92,7 @@ pub fn render(
 
         // Reserve space for cheatsheet bar when prefix is active.
         let cheatsheet_height: u16 = if prefix_active {
-            cheatsheet_bar_height(w, keymap)
+            cheatsheet_bar_height_cached(cache, w, keymap)
         } else {
             0
         };
@@ -218,7 +220,7 @@ pub fn render(
 
         // Render cheatsheet bar at the bottom.
         if prefix_active && cheatsheet_height > 0 && h > cheatsheet_height {
-            render_cheatsheet(frame, keymap, w, h, cheatsheet_height);
+            render_cheatsheet(frame, cache, keymap, w, h, cheatsheet_height);
         }
 
         // Render subtle grab-handle dots on each divider so users know they're draggable.
@@ -257,10 +259,17 @@ pub fn cheatsheet_bar_height(w: u16, keymap: &KeyMap) -> u16 {
     (layout.rows as u16) + 2 // +2 for border
 }
 
+fn cheatsheet_bar_height_cached(cache: &mut RenderCache, w: u16, keymap: &KeyMap) -> u16 {
+    let inner_w = w.saturating_sub(2) as usize;
+    let layout = cheatsheet_layout_cached(cache, keymap, inner_w);
+    (layout.rows as u16) + 2
+}
+
 /// Draw a styled cheatsheet bar showing available keybindings.
 /// Renders bindings in an aligned grid that adapts to terminal width.
 fn render_cheatsheet(
     frame: &mut ratatui::Frame,
+    cache: &mut RenderCache,
     keymap: &KeyMap,
     w: u16,
     h: u16,
@@ -275,11 +284,10 @@ fn render_cheatsheet(
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
 
-    let entries = cheatsheet_bindings(keymap);
-
     // Available width inside the border (2 chars for left/right border).
     let inner_w = w.saturating_sub(2) as usize;
-    let layout = compute_cheatsheet_grid_layout(&entries, inner_w);
+    let layout = cheatsheet_layout_cached(cache, keymap, inner_w);
+    let entries = cheatsheet_entries_cached(cache, keymap).clone();
 
     // Build rows as an aligned grid.
     let mut lines: Vec<TuiLine> = Vec::new();
@@ -329,6 +337,32 @@ fn render_cheatsheet(
         .title(Span::styled(" Keybindings ", title_style));
     let para = Paragraph::new(Text::from(lines)).block(block);
     frame.render_widget(para, bar_rect);
+}
+
+fn cheatsheet_entries_cached<'a>(
+    cache: &'a mut RenderCache,
+    keymap: &KeyMap,
+) -> &'a Vec<(String, &'static str)> {
+    cache
+        .cheatsheet_entries
+        .get_or_insert_with(|| cheatsheet_bindings(keymap))
+}
+
+fn cheatsheet_layout_cached(
+    cache: &mut RenderCache,
+    keymap: &KeyMap,
+    inner_w: usize,
+) -> CheatsheetGridLayout {
+    if let Some(layout) = cache.cheatsheet_layouts.get(&inner_w) {
+        return layout.clone();
+    }
+
+    let layout = {
+        let entries = cheatsheet_entries_cached(cache, keymap);
+        compute_cheatsheet_grid_layout(entries, inner_w)
+    };
+    cache.cheatsheet_layouts.insert(inner_w, layout.clone());
+    layout
 }
 
 fn cheatsheet_bindings(keymap: &KeyMap) -> Vec<(String, &'static str)> {
