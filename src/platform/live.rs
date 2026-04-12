@@ -1,11 +1,12 @@
 //! Live (real terminal) implementations of the trait abstractions.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, Event, KeyEventKind, MouseButton, MouseEventKind};
 
 use crate::core::keymap::KeyMap;
 use crate::core::layout::{Layout, PaneId};
@@ -18,41 +19,81 @@ use crate::traits::{AppEvent, EventSource, PaneBackend, PaneFactory, Renderer};
 /// Merges crossterm terminal events with PTY pane events.
 pub struct LiveEventSource {
     pane_rx: mpsc::Receiver<PaneEvent>,
+    queued: VecDeque<AppEvent>,
 }
 
 impl LiveEventSource {
     pub fn new(pane_rx: mpsc::Receiver<PaneEvent>) -> Self {
-        Self { pane_rx }
+        Self {
+            pane_rx,
+            queued: VecDeque::new(),
+        }
+    }
+
+    fn queue_event_coalesced(&mut self, event: AppEvent) {
+        match event {
+            AppEvent::Mouse(mouse) if mouse.kind == MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(AppEvent::Mouse(last)) = self.queued.back_mut() {
+                    if last.kind == MouseEventKind::Drag(MouseButton::Left) {
+                        *last = mouse;
+                        return;
+                    }
+                }
+                self.queued.push_back(AppEvent::Mouse(mouse));
+            }
+            AppEvent::Resize(w, h) => {
+                if let Some(AppEvent::Resize(last_w, last_h)) = self.queued.back_mut() {
+                    *last_w = w;
+                    *last_h = h;
+                    return;
+                }
+                self.queued.push_back(AppEvent::Resize(w, h));
+            }
+            other => self.queued.push_back(other),
+        }
+    }
+
+    fn map_crossterm_event(event: Event) -> Option<AppEvent> {
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => Some(AppEvent::Key(key)),
+            Event::Mouse(mouse) => Some(AppEvent::Mouse(mouse)),
+            Event::Resize(w, h) => Some(AppEvent::Resize(w, h)),
+            _ => None,
+        }
     }
 }
 
 impl EventSource for LiveEventSource {
     fn next_event(&mut self, timeout: Duration) -> Result<Option<AppEvent>> {
+        if let Some(event) = self.queued.pop_front() {
+            return Ok(Some(event));
+        }
+
         // Drain pane events first (non-blocking).
-        match self.pane_rx.try_recv() {
-            Ok(PaneEvent::Data { pane_id, .. }) => {
-                return Ok(Some(AppEvent::PaneData { pane_id }));
-            }
-            Ok(PaneEvent::Exit { pane_id }) => {
-                return Ok(Some(AppEvent::PaneExit { pane_id }));
-            }
-            Err(_) => {}
+        while let Ok(pane_event) = self.pane_rx.try_recv() {
+            let app_event = match pane_event {
+                PaneEvent::Data { pane_id, .. } => AppEvent::PaneData { pane_id },
+                PaneEvent::Exit { pane_id } => AppEvent::PaneExit { pane_id },
+            };
+            self.queue_event_coalesced(app_event);
+        }
+        if let Some(event) = self.queued.pop_front() {
+            return Ok(Some(event));
         }
 
         // Poll crossterm for keyboard/mouse/resize.
         if event::poll(timeout)? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    return Ok(Some(AppEvent::Key(key)));
-                }
-                Event::Mouse(mouse) => {
-                    return Ok(Some(AppEvent::Mouse(mouse)));
-                }
-                Event::Resize(w, h) => {
-                    return Ok(Some(AppEvent::Resize(w, h)));
-                }
-                _ => {}
+            if let Some(event) = Self::map_crossterm_event(event::read()?) {
+                self.queue_event_coalesced(event);
             }
+
+            while event::poll(Duration::from_millis(0))? {
+                if let Some(event) = Self::map_crossterm_event(event::read()?) {
+                    self.queue_event_coalesced(event);
+                }
+            }
+
+            return Ok(self.queued.pop_front());
         }
 
         Ok(None)
