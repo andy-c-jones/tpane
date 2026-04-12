@@ -1,3 +1,13 @@
+//! Pure pane layout tree and geometry computation.
+//!
+//! This module contains no terminal I/O. It models pane splits/focus and
+//! resolves tree structure into concrete rectangles and divider metadata.
+//!
+//! # Terminology
+//!
+//! - *First child*: left for vertical splits, top for horizontal splits.
+//! - *Second child*: right for vertical splits, bottom for horizontal splits.
+
 use std::collections::HashMap;
 
 /// Unique identifier for a leaf pane.
@@ -27,9 +37,13 @@ pub enum Node {
 /// Resolved geometry for a pane.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Rect {
+    /// Left edge in terminal cells.
     pub x: u16,
+    /// Top edge in terminal cells.
     pub y: u16,
+    /// Width in terminal cells.
     pub width: u16,
+    /// Height in terminal cells.
     pub height: u16,
 }
 
@@ -78,6 +92,14 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// Create a layout with a single root pane (`PaneId(0)`) focused.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let layout = Layout::new();
+    /// assert_eq!(layout.active, PaneId(0));
+    /// ```
     pub fn new() -> Self {
         let root_id = PaneId(0);
         Self {
@@ -88,6 +110,9 @@ impl Layout {
         }
     }
 
+    /// Allocate and return a new unique pane identifier.
+    ///
+    /// IDs are monotonically increasing within a [`Layout`] instance.
     pub fn next_id(&mut self) -> PaneId {
         let id = PaneId(self.next_id);
         self.next_id += 1;
@@ -95,12 +120,18 @@ impl Layout {
     }
 
     /// Split the active pane (new pane goes after/right/below), returning the new pane's ID.
+    ///
+    /// Equivalent to calling [`Self::split_with_position`] with
+    /// [`SplitPosition::After`].
     #[allow(dead_code)]
     pub fn split(&mut self, orientation: Orientation) -> PaneId {
         self.split_with_position(orientation, SplitPosition::After)
     }
 
     /// Split the active pane with explicit positioning of the new pane, using the default 50/50 ratio.
+    ///
+    /// See also [`Self::split_with_position_and_ratio`] when explicit ratio
+    /// control is required.
     pub fn split_with_position(
         &mut self,
         orientation: Orientation,
@@ -169,6 +200,11 @@ impl Layout {
     }
 
     /// Compute pixel/cell geometry for every pane given terminal dimensions.
+    ///
+    /// # Notes
+    ///
+    /// Returned rectangles include border area. UI renderers that draw pane
+    /// borders should derive inner content dimensions from these rects.
     pub fn compute_rects(&self, width: u16, height: u16) -> HashMap<PaneId, Rect> {
         let mut map = HashMap::new();
         compute(
@@ -203,6 +239,12 @@ impl Layout {
         }
     }
 
+    /// Return all leaf pane IDs in document order.
+    ///
+    /// # Notes
+    ///
+    /// This is useful for tests and diagnostics where callers need a stable
+    /// snapshot of the tree leaves without traversing [`Node`] directly.
     #[allow(dead_code)]
     pub fn leaf_ids(&self) -> Vec<PaneId> {
         collect_leaves(&self.root)
@@ -217,6 +259,8 @@ impl Layout {
     }
 
     /// Collect all dividers (gaps between split panes) at the given terminal size.
+    ///
+    /// Divider metadata is used for mouse hit-testing and drag-based resize.
     pub fn compute_dividers(&self, width: u16, height: u16) -> Vec<DividerInfo> {
         let mut dividers = Vec::new();
         collect_dividers(
@@ -233,6 +277,9 @@ impl Layout {
     }
 
     /// Compute pane rects and divider metadata in a single tree traversal.
+    ///
+    /// This is more efficient than separately calling [`Self::compute_rects`]
+    /// and [`Self::compute_dividers`].
     pub fn compute_geometry(
         &self,
         width: u16,
@@ -269,6 +316,9 @@ impl Layout {
     }
 
     /// Build a reusable handle to a split identified by its representative leaf pane IDs.
+    ///
+    /// The resulting handle can be reused with
+    /// [`Self::set_split_ratio_with_handle`] to avoid repeated tree searches.
     pub fn split_handle(&self, first_pane: PaneId, second_pane: PaneId) -> Option<SplitHandle> {
         let mut path = Vec::new();
         if find_split_path(&self.root, first_pane, second_pane, &mut path) {
@@ -286,6 +336,10 @@ impl Layout {
 
     /// Focus the nearest pane in the given direction using spatial geometry.
     /// `terminal_size` is (width, height) used to compute pane rects.
+    ///
+    /// # Behavior
+    ///
+    /// If no pane exists in the requested direction, focus remains unchanged.
     pub fn focus_direction(&mut self, direction: Direction, terminal_size: (u16, u16)) {
         let (w, h) = terminal_size;
         let rects = self.compute_rects(w, h);
@@ -342,9 +396,13 @@ impl Layout {
 /// Direction for spatial pane navigation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
+    /// Move focus toward smaller x coordinates.
     Left,
+    /// Move focus toward larger x coordinates.
     Right,
+    /// Move focus toward smaller y coordinates.
     Up,
+    /// Move focus toward larger y coordinates.
     Down,
 }
 
@@ -1149,7 +1207,9 @@ mod tests {
 
         assert_eq!(rects.len(), rects_ref.len());
         for (id, rect) in &rects_ref {
-            let got = rects.get(id).expect("missing pane rect from compute_geometry");
+            let got = rects
+                .get(id)
+                .expect("missing pane rect from compute_geometry");
             assert_eq!(got.x, rect.x);
             assert_eq!(got.y, rect.y);
             assert_eq!(got.width, rect.width);
@@ -1174,25 +1234,24 @@ mod tests {
                 )
             })
             .collect();
-        let mut keys_ref: Vec<(u8, u16, u16, u16, u32, u32, u16, u16)> =
-            dividers_ref
-                .iter()
-                .map(|d| {
-                    (
-                        match d.orientation {
-                            Orientation::Vertical => 0,
-                            Orientation::Horizontal => 1,
-                        },
-                        d.position,
-                        d.span_start,
-                        d.span_end,
-                        d.first_pane.0,
-                        d.second_pane.0,
-                        d.rect_start,
-                        d.rect_size,
-                    )
-                })
-                .collect();
+        let mut keys_ref: Vec<(u8, u16, u16, u16, u32, u32, u16, u16)> = dividers_ref
+            .iter()
+            .map(|d| {
+                (
+                    match d.orientation {
+                        Orientation::Vertical => 0,
+                        Orientation::Horizontal => 1,
+                    },
+                    d.position,
+                    d.span_start,
+                    d.span_end,
+                    d.first_pane.0,
+                    d.second_pane.0,
+                    d.rect_start,
+                    d.rect_size,
+                )
+            })
+            .collect();
         keys.sort();
         keys_ref.sort();
         assert_eq!(keys, keys_ref);

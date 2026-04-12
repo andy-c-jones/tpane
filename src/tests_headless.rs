@@ -36,6 +36,15 @@ mod tests {
         })
     }
 
+    fn key_release(code: KeyCode, mods: KeyModifiers) -> AppEvent {
+        AppEvent::Key(KeyEvent {
+            code,
+            modifiers: mods,
+            kind: KeyEventKind::Release,
+            state: KeyEventState::empty(),
+        })
+    }
+
     /// Helper: send prefix (Ctrl+B) then the command key.
     fn prefix_then(
         app: &mut App<HeadlessPaneBackend>,
@@ -562,6 +571,30 @@ mod tests {
         assert!(!app.is_running());
     }
 
+    #[test]
+    fn run_handles_repeat_mouse_resize_pane_data_and_ignored_key_variants() {
+        let (mut app, factory, mut clip) = default_app();
+        let active = app.active_pane();
+        let mut events = HeadlessEventSource::new();
+        let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
+
+        events.push(key_release(KeyCode::Char('z'), KeyModifiers::empty()));
+        events.push(key_repeat(KeyCode::Left, alt_shift));
+        events.push(mouse_click(2, 2));
+        events.push(mouse_up(2, 2));
+        events.push(AppEvent::Resize(100, 30));
+        events.push(AppEvent::PaneData { pane_id: active });
+        events.push(key_press(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        events.push(key_press(KeyCode::Char('q'), KeyModifiers::empty()));
+
+        let mut renderer = HeadlessRenderer::new();
+        app.run(&mut events, &mut renderer, &factory, &mut clip)
+            .unwrap();
+
+        assert!(!app.is_running());
+        assert!(renderer.frame_count >= 2);
+    }
+
     // ── complex sequences ─────────────────────────────────────────────────────
 
     #[test]
@@ -937,6 +970,62 @@ mod tests {
         // Actually, our implementation checks globals first, so prefix remains
         // The key was consumed by the global handler
         assert!(app.is_running());
+    }
+
+    #[test]
+    fn ctrl_shift_c_with_empty_selection_preserves_selection() {
+        let (mut app, factory, mut clip) = default_app();
+        let pane_id = app.active_pane();
+        app.selection = Some(crate::core::selection::Selection {
+            pane_id,
+            start: (3, 3),
+            end: (3, 3),
+            display_offset: 0,
+        });
+
+        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        app.process_event(
+            key_press(KeyCode::Char('C'), ctrl_shift),
+            &factory,
+            &mut clip,
+        )
+        .unwrap();
+
+        assert!(app.selection.is_some());
+        assert!(clip.content.is_empty());
+    }
+
+    #[test]
+    fn ctrl_shift_v_with_empty_clipboard_writes_nothing() {
+        let (mut app, factory, mut clip) = default_app();
+        let active = app.active_pane();
+        assert!(clip.content.is_empty());
+
+        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        app.process_event(
+            key_press(KeyCode::Char('V'), ctrl_shift),
+            &factory,
+            &mut clip,
+        )
+        .unwrap();
+
+        assert!(app.panes[&active].input_log.is_empty());
+    }
+
+    #[test]
+    fn ctrl_shift_non_shortcut_key_falls_through_to_input() {
+        let (mut app, factory, mut clip) = default_app();
+        let active = app.active_pane();
+        let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+
+        app.process_event(
+            key_press(KeyCode::Char('X'), ctrl_shift),
+            &factory,
+            &mut clip,
+        )
+        .unwrap();
+
+        assert_eq!(app.panes[&active].input_log, vec![vec![24]]);
     }
 
     #[test]
@@ -1447,5 +1536,41 @@ mod tests {
         ];
         app.apply_startup_commands(&cmds, &factory).unwrap();
         assert_eq!(app.pane_count(), 3);
+    }
+
+    #[test]
+    fn startup_split_vertical_and_horizontal_create_two_axes() {
+        let factory = HeadlessPaneFactory;
+        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
+        let cmds = vec![
+            (crate::core::commands::Command::SplitVertical, None),
+            (crate::core::commands::Command::SplitHorizontal, None),
+        ];
+        app.apply_startup_commands(&cmds, &factory).unwrap();
+        assert_eq!(app.pane_count(), 3);
+    }
+
+    #[test]
+    fn startup_split_up_creates_upper_pane() {
+        let factory = HeadlessPaneFactory;
+        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
+        let cmds = vec![(crate::core::commands::Command::SplitUp, Some(0.6))];
+        app.apply_startup_commands(&cmds, &factory).unwrap();
+
+        let (w, h) = TERM_SIZE;
+        let ids = app.layout.leaf_ids();
+        let rects = app.layout.compute_rects(w, h);
+        let top_h = rects[&ids[0]].height;
+        let bottom_h = rects[&ids[1]].height;
+        assert!(top_h < bottom_h);
+    }
+
+    #[test]
+    fn startup_non_split_command_is_dispatched() {
+        let factory = HeadlessPaneFactory;
+        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
+        let cmds = vec![(crate::core::commands::Command::Quit, None)];
+        app.apply_startup_commands(&cmds, &factory).unwrap();
+        assert!(!app.is_running());
     }
 }

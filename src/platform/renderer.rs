@@ -1,5 +1,10 @@
-use std::io::{self, Stdout};
+//! Terminal UI rendering and key-to-PTY byte translation.
+//!
+//! This module draws pane borders/content/cheatsheet and provides helpers for
+//! translating crossterm key events into byte sequences expected by shells.
+
 use std::collections::HashMap;
+use std::io::{self, Stdout};
 use std::time::Instant;
 
 use alacritty_terminal::index::{Column, Line, Point};
@@ -20,6 +25,7 @@ use crate::core::layout::{Layout, PaneId};
 use crate::core::selection::Selection;
 use crate::platform::pane::PaneState;
 
+/// Concrete terminal type used by tpane's live renderer.
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
 /// Braille spinner frames — a smooth rotating dot pattern.
@@ -43,6 +49,10 @@ struct PaneRenderCache {
     content: Option<Vec<TuiLine<'static>>>,
 }
 
+/// Cache object reused across frames by the live renderer.
+///
+/// This stores pane content/title snapshots plus cheatsheet layout derivations
+/// so repeated renders avoid unnecessary recomputation when inputs are stable.
 #[derive(Default)]
 pub struct RenderCache {
     pane_content: HashMap<PaneId, PaneRenderCache>,
@@ -52,6 +62,10 @@ pub struct RenderCache {
 }
 
 /// Enter raw mode and alternate screen, return a ratatui Terminal.
+///
+/// # Errors
+///
+/// Returns terminal setup errors from crossterm or ratatui initialization.
 pub fn init_terminal() -> Result<Tui> {
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -65,6 +79,10 @@ pub fn init_terminal() -> Result<Tui> {
 }
 
 /// Restore the terminal to its previous state.
+///
+/// # Errors
+///
+/// Returns an error if terminal teardown operations fail.
 pub fn restore_terminal(tui: &mut Tui) -> Result<()> {
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
@@ -77,6 +95,15 @@ pub fn restore_terminal(tui: &mut Tui) -> Result<()> {
 }
 
 /// Render the full tpane UI: one bordered block per pane, content from the Term grid.
+///
+/// # Behavior
+///
+/// When `prefix_active` is true, a cheatsheet bar is rendered at the bottom and
+/// pane geometry is computed against the remaining vertical space.
+///
+/// # Errors
+///
+/// Returns ratatui backend errors from frame drawing.
 pub fn render(
     tui: &mut Tui,
     cache: &mut RenderCache,
@@ -257,6 +284,10 @@ pub fn render(
 
 /// Compute the cheatsheet bar height for a given terminal width.
 /// Returns lines_of_bindings + 2 (for top/bottom border).
+///
+/// # Notes
+///
+/// The `+2` accounts for border rows around content rows.
 pub fn cheatsheet_bar_height(w: u16, keymap: &KeyMap) -> u16 {
     let entries = cheatsheet_bindings(keymap);
     let inner_w = w.saturating_sub(2) as usize;
@@ -592,7 +623,10 @@ fn term_to_lines(
                 current_text.push(ch);
             } else {
                 if !current_text.is_empty() {
-                    spans.push(Span::styled(std::mem::take(&mut current_text), current_style));
+                    spans.push(Span::styled(
+                        std::mem::take(&mut current_text),
+                        current_style,
+                    ));
                 }
                 current_text.push(ch);
                 current_style = style;
@@ -672,6 +706,19 @@ fn ansi_color_to_ratatui(color: alacritty_terminal::vte::ansi::Color) -> Option<
 }
 
 /// Translate a crossterm key event into bytes to send to the PTY.
+///
+/// # Behavior
+///
+/// Only [`KeyEventKind::Press`] events are translated; release and repeat
+/// events return `None`.
+///
+/// # Examples
+///
+/// ```text
+/// Enter -> \\r
+/// Left  -> ESC [ D
+/// Ctrl+C -> 0x03
+/// ```
 pub fn key_event_to_bytes(event: &crossterm::event::KeyEvent) -> Option<Vec<u8>> {
     use crossterm::event::{KeyCode, KeyModifiers};
     if event.kind != KeyEventKind::Press {
@@ -794,6 +841,7 @@ mod tests {
     use super::*;
     use crate::core::commands::Command;
     use crate::core::keymap::{KeyChord, KeyMap};
+    use alacritty_terminal::vte::ansi::{Color as AColor, NamedColor, Rgb};
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     fn press(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
@@ -873,6 +921,15 @@ mod tests {
         let layout = compute_cheatsheet_grid_layout(&entries, 20);
         assert_eq!(layout.cols, 1);
         assert_eq!(layout.rows, entries.len());
+    }
+
+    #[test]
+    fn cheatsheet_grid_for_empty_entries_returns_single_empty_row() {
+        let entries: Vec<(String, &'static str)> = Vec::new();
+        let layout = compute_cheatsheet_grid_layout(&entries, 10);
+        assert_eq!(layout.cols, 1);
+        assert_eq!(layout.rows, 1);
+        assert_eq!(layout.col_widths, vec![0]);
     }
 
     // ── key_event_to_bytes ────────────────────────────────────────────────────
@@ -1022,5 +1079,77 @@ mod tests {
     fn plain_arrow_no_modifier() {
         let event = press(KeyCode::Left, KeyModifiers::empty());
         assert_eq!(key_event_to_bytes(&event), Some(vec![0x1b, b'[', b'D']));
+    }
+
+    #[test]
+    fn modifier_param_combines_shift_alt_ctrl() {
+        assert_eq!(modifier_param(KeyModifiers::empty()), 1);
+        assert_eq!(modifier_param(KeyModifiers::SHIFT), 2);
+        assert_eq!(modifier_param(KeyModifiers::ALT | KeyModifiers::CONTROL), 7);
+        assert_eq!(
+            modifier_param(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL),
+            8
+        );
+    }
+
+    #[test]
+    fn csi_and_tilde_helpers_encode_modifiers() {
+        assert_eq!(
+            csi_with_modifier(b'A', KeyModifiers::empty()),
+            vec![0x1b, b'[', b'A']
+        );
+        assert_eq!(
+            csi_with_modifier(b'D', KeyModifiers::ALT | KeyModifiers::CONTROL),
+            vec![0x1b, b'[', b'1', b';', b'7', b'D']
+        );
+        assert_eq!(
+            tilde_with_modifier(3, KeyModifiers::empty()),
+            vec![0x1b, b'[', b'3', b'~']
+        );
+        assert_eq!(
+            tilde_with_modifier(6, KeyModifiers::SHIFT),
+            vec![0x1b, b'[', b'6', b';', b'2', b'~']
+        );
+    }
+
+    #[test]
+    fn key_chord_display_formats_special_keys_and_picks_sorted_first() {
+        let left = KeyChord::parse("ctrl+left").unwrap();
+        let f5 = KeyChord::parse("f5").unwrap();
+        let space = KeyChord::parse("space").unwrap();
+
+        assert_eq!(key_chord_to_display(&left), "Ctrl+←");
+        assert_eq!(key_chord_to_display(&f5), "F5");
+        assert_eq!(key_chord_to_display(&space), "Space");
+
+        let first = display_key_for(vec![
+            KeyChord::parse("z").unwrap(),
+            KeyChord::parse("a").unwrap(),
+        ]);
+        assert_eq!(first.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn ansi_color_mapping_covers_named_spec_index_and_default_none() {
+        assert_eq!(
+            ansi_color_to_ratatui(AColor::Named(NamedColor::Blue)),
+            Some(Color::Blue)
+        );
+        assert_eq!(
+            ansi_color_to_ratatui(AColor::Spec(Rgb {
+                r: 10,
+                g: 20,
+                b: 30
+            })),
+            Some(Color::Rgb(10, 20, 30))
+        );
+        assert_eq!(
+            ansi_color_to_ratatui(AColor::Indexed(42)),
+            Some(Color::Indexed(42))
+        );
+        assert_eq!(
+            ansi_color_to_ratatui(AColor::Named(NamedColor::Foreground)),
+            None
+        );
     }
 }

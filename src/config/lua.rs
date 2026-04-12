@@ -1,3 +1,5 @@
+//! Lua-backed configuration loading and binding extraction.
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -7,19 +9,31 @@ use crate::config::defaults::DEFAULT_CONFIG;
 use crate::core::commands::Command;
 use crate::core::keymap::{KeyChord, KeyMap};
 
-/// Resolved configuration after loading main.lua.
+/// Resolved configuration after loading `main.lua`.
+///
+/// # Fields
+///
+/// - [`Self::keymap`]: resolved prefix/direct key bindings
+/// - [`Self::startup_commands`]: startup command sequence captured from Lua
+/// - [`Self::show_cheatsheet`]: whether prefix-mode cheatsheet is shown
 pub struct LuaConfig {
+    /// Effective key map consumed by [`crate::app::App`].
     pub keymap: KeyMap,
     /// Commands to run at startup (from tpane.on_startup), each paired with an optional split ratio.
     /// The ratio is the fraction of space the *active pane* keeps after the split (0.0–1.0).
     pub startup_commands: Vec<(Command, Option<f64>)>,
     /// Show keybinding cheatsheet when prefix key is active.
+    ///
+    /// This toggles prefix-mode UI hints in [`crate::platform::renderer`].
     pub show_cheatsheet: bool,
     _lua: Lua,
 }
 
 impl LuaConfig {
     /// Return the platform-appropriate config directory path.
+    ///
+    /// This resolves to `$XDG_CONFIG_HOME/tpane` (or `~/.config/tpane`) on
+    /// Unix-like systems and `%APPDATA%\\tpane` on Windows.
     pub fn config_dir() -> PathBuf {
         // Linux/macOS: ~/.config/tpane
         // Windows:     %APPDATA%\tpane
@@ -33,11 +47,25 @@ impl LuaConfig {
         base.join("tpane")
     }
 
+    /// Return the path to the main configuration file (`main.lua`).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let path = LuaConfig::config_file();
+    /// // ~/.config/tpane/main.lua (unix-like)
+    /// ```
     pub fn config_file() -> PathBuf {
         Self::config_dir().join("main.lua")
     }
 
     /// Ensure the config directory and default file exist.
+    ///
+    /// If the file is missing, this writes [`DEFAULT_CONFIG`].
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors when directory creation or file writes fail.
     pub fn init_if_missing() -> Result<()> {
         let dir = Self::config_dir();
         if !dir.exists() {
@@ -52,14 +80,27 @@ impl LuaConfig {
         Ok(())
     }
 
-    /// Load and evaluate main.lua, returning the resolved config.
+    /// Load and evaluate `main.lua`, returning the resolved config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when file I/O fails or Lua evaluation reports a syntax
+    /// or runtime error.
     pub fn load() -> Result<Self> {
         Self::init_if_missing()?;
         let source = std::fs::read_to_string(Self::config_file()).context("reading main.lua")?;
         Self::load_from_source(&source)
     }
 
-    /// Load config from a raw Lua source string (used in tests and for future embedding).
+    /// Load config from a raw Lua source string.
+    ///
+    /// This is used by tests and can also be used by future embedding
+    /// integrations that provide in-memory config content.
+    ///
+    /// # Behavior
+    ///
+    /// Unknown commands and invalid key chords are ignored, matching runtime
+    /// behavior for permissive user configuration.
     pub fn load_from_source(source: &str) -> Result<Self> {
         // mlua 0.11: LuaError's inner source field is Arc<dyn Error> (no Send+Sync), so it no
         // longer satisfies anyhow's From<E: Send+Sync> bound.  Convert explicitly via format.

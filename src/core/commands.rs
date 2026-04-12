@@ -1,3 +1,10 @@
+//! Command identifiers understood by the app dispatcher and Lua config parser.
+//!
+//! # Notes
+//!
+//! These values are shared by keymap bindings, Lua configuration parsing, and
+//! runtime dispatch in [`crate::app::App`].
+
 /// All actions that can be dispatched in tpane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -30,7 +37,18 @@ pub enum Command {
 }
 
 impl Command {
-    /// Parse a command name string from Lua config into a Command.
+    /// Parse a command name string from Lua config into a [`Command`].
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// split_right -> Command::SplitRight
+    /// close       -> Command::ClosePane
+    /// ```
+    ///
+    /// # Behavior
+    ///
+    /// Unknown or unsupported command names return `None`.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "split_vertical" => Some(Self::SplitVertical),

@@ -1,3 +1,13 @@
+//! tpane executable entry point and runtime wiring.
+//!
+//! This module bootstraps configuration, terminal state, and live platform
+//! adapters, then hands control to [`crate::app::App`].
+//!
+//! # Notes
+//!
+//! Most application behavior lives in [`crate::app`] and core/platform modules;
+//! this file focuses on wiring and lifecycle.
+
 mod app;
 mod config;
 mod core;
@@ -27,6 +37,12 @@ fn main() -> Result<()> {
     result
 }
 
+/// Construct and run the live application with real event, renderer, and clipboard backends.
+///
+/// # Errors
+///
+/// Returns errors from terminal size probing, pane spawning, startup command
+/// execution, and the main app loop.
 fn run(config: LuaConfig, tui: &mut renderer::Tui) -> Result<()> {
     let size = crossterm::terminal::size()?;
     let mut factory = LivePaneFactory::new();
