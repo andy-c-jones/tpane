@@ -9,7 +9,6 @@ use std::time::Instant;
 
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::Cell;
-use alacritty_terminal::term::RenderableContent;
 use anyhow::Result;
 use crossterm::event::KeyEventKind;
 use ratatui::backend::CrosstermBackend;
@@ -558,6 +557,9 @@ fn key_chord_to_display(chord: &KeyChord) -> String {
 
 /// Convert the alacritty Term grid into ratatui Text for display.
 /// If `sel_range` is Some, cells within the selection are rendered with inverted colors.
+///
+/// Reads cells directly from the grid by reference in a single pass — no
+/// intermediate snapshot allocation.
 fn term_to_lines(
     pane: &PaneState,
     width: u16,
@@ -566,33 +568,22 @@ fn term_to_lines(
 ) -> Option<Vec<TuiLine<'static>>> {
     let rows = height as usize;
     let cols = width as usize;
-    let snapshot = {
-        let term = pane.term.lock();
-        let content: RenderableContent<'_> = term.renderable_content();
-        let mut rows_snapshot: Vec<Vec<Cell>> = Vec::with_capacity(rows);
-        for row in 0..rows {
-            let mut row_cells: Vec<Cell> = Vec::with_capacity(cols);
-            for col in 0..cols {
-                let point = Point::new(
-                    Line(row as i32 - content.display_offset as i32),
-                    Column(col),
-                );
-                row_cells.push(term.grid()[point].clone());
-            }
-            rows_snapshot.push(row_cells);
-        }
-        rows_snapshot
-    };
+
+    let term = pane.term.lock();
+    let content = term.renderable_content();
+    let display_offset = content.display_offset as i32;
 
     let mut lines: Vec<TuiLine<'static>> = Vec::with_capacity(rows);
     let mut has_visible_content = false;
 
-    for (row, row_cells) in snapshot.iter().enumerate() {
+    for row in 0..rows {
         let mut spans: Vec<Span<'static>> = Vec::new();
         let mut current_text = String::new();
         let mut current_style = Style::default();
 
-        for (col, cell) in row_cells.iter().enumerate() {
+        for col in 0..cols {
+            let point = Point::new(Line(row as i32 - display_offset), Column(col));
+            let cell = &term.grid()[point];
             let (ch, mut style) = cell_to_span(cell);
             if ch != ' ' {
                 has_visible_content = true;
@@ -612,7 +603,6 @@ fn term_to_lines(
                     r > sr && r < er
                 };
                 if in_sel {
-                    // Swap fg/bg for selection highlight.
                     let fg = style.bg.unwrap_or(Color::Black);
                     let bg = style.fg.unwrap_or(Color::White);
                     style = style.fg(fg).bg(bg);
@@ -637,6 +627,8 @@ fn term_to_lines(
         }
         lines.push(TuiLine::from(spans));
     }
+
+    drop(term);
 
     if has_visible_content {
         Some(lines)
