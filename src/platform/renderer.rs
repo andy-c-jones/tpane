@@ -14,6 +14,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
 
 use crate::core::layout::{Layout, PaneId};
+use crate::core::selection::Selection;
 use crate::platform::pane::PaneState;
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
@@ -58,6 +59,7 @@ pub fn render(
     panes: &std::collections::HashMap<PaneId, PaneState>,
     terminal_size: (u16, u16),
     prefix_active: bool,
+    selection: Option<&Selection>,
 ) -> Result<()> {
     tui.draw(|frame| {
         let (w, h) = terminal_size;
@@ -108,7 +110,12 @@ pub fn render(
 
             if let Some(pane) = panes.get(pane_id) {
                 if term_has_visible_content(pane, inner.width, inner.height) {
-                    let content = term_to_text(pane, inner.width, inner.height);
+                    // Get selection range for this pane (if any).
+                    let sel_range = selection
+                        .filter(|s| s.pane_id == *pane_id && !s.is_empty())
+                        .map(|s| s.ordered());
+
+                    let content = term_to_text(pane, inner.width, inner.height, sel_range);
                     let para = Paragraph::new(content);
                     frame.render_widget(para, inner);
                 } else {
@@ -176,6 +183,13 @@ fn render_cheatsheet(
         ("q", "Quit tpane"),
     ];
 
+    // Global bindings shown after the separator.
+    let global_bindings: &[(&str, &str)] = &[
+        ("Ctrl+Shift+C", "Copy"),
+        ("Ctrl+Shift+V", "Paste"),
+        ("Right-Click", "Copy"),
+    ];
+
     let mut spans: Vec<Span> = vec![
         Span::styled(" tpane ", title_style),
         Span::styled("│ ", sep_style),
@@ -184,6 +198,13 @@ fn render_cheatsheet(
         if i > 0 {
             spans.push(Span::styled(" │ ", sep_style));
         }
+        spans.push(Span::styled(*key, key_style));
+        spans.push(Span::styled(" ", desc_style));
+        spans.push(Span::styled(*desc, desc_style));
+    }
+    // Global bindings (always available, not prefix-dependent).
+    for (key, desc) in global_bindings {
+        spans.push(Span::styled(" │ ", sep_style));
         spans.push(Span::styled(*key, key_style));
         spans.push(Span::styled(" ", desc_style));
         spans.push(Span::styled(*desc, desc_style));
@@ -219,10 +240,12 @@ fn term_has_visible_content(pane: &PaneState, width: u16, height: u16) -> bool {
 }
 
 /// Convert the alacritty Term grid into ratatui Text for display.
+/// If `sel_range` is Some, cells within the selection are rendered with inverted colors.
 fn term_to_text(
     pane: &PaneState,
     width: u16,
     height: u16,
+    sel_range: Option<((u16, u16), (u16, u16))>,
 ) -> Text<'static> {
     let term = pane.term.lock();
     let content: RenderableContent<'_> = term.renderable_content();
@@ -240,7 +263,28 @@ fn term_to_text(
             let point = Point::new(Line(row as i32 - content.display_offset as i32), Column(col));
             // Access cell via the grid directly
             let cell = term.grid()[point].clone();
-            let (ch, style) = cell_to_span(&cell);
+            let (ch, mut style) = cell_to_span(&cell);
+
+            // Apply selection highlight (inverted colors).
+            if let Some(((sc, sr), (ec, er))) = sel_range {
+                let r = row as u16;
+                let c = col as u16;
+                let in_sel = if sr == er {
+                    r == sr && c >= sc && c <= ec
+                } else if r == sr {
+                    c >= sc
+                } else if r == er {
+                    c <= ec
+                } else {
+                    r > sr && r < er
+                };
+                if in_sel {
+                    // Swap fg/bg for selection highlight.
+                    let fg = style.bg.unwrap_or(Color::Black);
+                    let bg = style.fg.unwrap_or(Color::White);
+                    style = style.fg(fg).bg(bg);
+                }
+            }
 
             if style == current_style {
                 current_text.push(ch);

@@ -4,6 +4,7 @@ use anyhow::Result;
 use crossterm::event::{KeyEvent, MouseEvent};
 
 use crate::core::layout::PaneId;
+use crate::core::selection::Selection;
 
 /// Unified event type for the App event loop.
 #[derive(Debug, Clone)]
@@ -27,6 +28,11 @@ pub trait PaneBackend: Send {
     fn write_input(&mut self, bytes: &[u8]) -> Result<()>;
     /// Notify the backend that the pane geometry changed.
     fn resize(&mut self, cols: u16, rows: u16);
+    /// Extract text from a rectangular selection region.
+    /// Coordinates are pane-grid-local (col, row).
+    fn selected_text(&self, _start: (u16, u16), _end: (u16, u16), _display_offset: usize) -> String {
+        String::new()
+    }
 }
 
 /// Factory for creating pane backends.
@@ -42,5 +48,13 @@ pub trait Renderer<B: PaneBackend> {
         panes: &std::collections::HashMap<PaneId, B>,
         terminal_size: (u16, u16),
         prefix_active: bool,
+        selection: Option<&Selection>,
     ) -> Result<()>;
 }
+
+/// Clipboard abstraction for testability.
+pub trait Clipboard {
+    fn get_text(&mut self) -> Result<String>;
+    fn set_text(&mut self, text: &str) -> Result<()>;
+}
+

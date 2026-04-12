@@ -68,6 +68,10 @@ impl PaneBackend for PaneState {
     fn resize(&mut self, cols: u16, rows: u16) {
         PaneState::resize(self, cols, rows);
     }
+
+    fn selected_text(&self, start: (u16, u16), end: (u16, u16), display_offset: usize) -> String {
+        PaneState::extract_text(self, start, end, display_offset)
+    }
 }
 
 // ── LivePaneFactory ──────────────────────────────────────────────────────────
@@ -116,7 +120,8 @@ impl<'a> Renderer<PaneState> for LiveRenderer<'a> {
         panes: &HashMap<PaneId, PaneState>,
         terminal_size: (u16, u16),
         prefix_active: bool,
+        selection: Option<&crate::core::selection::Selection>,
     ) -> Result<()> {
-        renderer::render(self.tui, layout, panes, terminal_size, prefix_active)
+        renderer::render(self.tui, layout, panes, terminal_size, prefix_active, selection)
     }
 }

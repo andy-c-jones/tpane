@@ -162,6 +162,56 @@ impl PaneState {
     pub fn title(&self) -> String {
         self.title.lock().clone()
     }
+
+    /// Extract text from the terminal grid between two pane-grid-local positions.
+    /// Handles line wrapping: wrapped lines don't get a newline inserted.
+    pub fn extract_text(&self, start: (u16, u16), end: (u16, u16), _display_offset: usize) -> String {
+        let term = self.term.lock();
+        let content = term.renderable_content();
+        let offset = content.display_offset as i32;
+
+        let (sc, sr) = start;
+        let (ec, er) = end;
+
+        let mut result = String::new();
+        for row in sr..=er {
+            let col_start = if row == sr { sc } else { 0 };
+            let col_end = if row == er { ec } else { self.cols.saturating_sub(1) };
+
+            let mut line = String::new();
+            for col in col_start..=col_end {
+                let point = alacritty_terminal::index::Point::new(
+                    alacritty_terminal::index::Line(row as i32 - offset),
+                    alacritty_terminal::index::Column(col as usize),
+                );
+                let c = term.grid()[point].c;
+                // Skip wide-char spacer cells (null char with WIDE_CHAR_SPACER flag).
+                if c == '\0' {
+                    continue;
+                }
+                line.push(c);
+            }
+
+            // Trim trailing spaces from each line.
+            let trimmed = line.trim_end();
+            result.push_str(trimmed);
+
+            // Add newline between lines, but not after the last line.
+            // Skip newline for wrapped lines (the terminal treats them as one logical line).
+            if row < er {
+                let line_point = alacritty_terminal::index::Point::new(
+                    alacritty_terminal::index::Line(row as i32 - offset),
+                    alacritty_terminal::index::Column(0),
+                );
+                let flags = term.grid()[line_point].flags;
+                let is_wrapped = flags.contains(alacritty_terminal::term::cell::Flags::WRAPLINE);
+                if !is_wrapped {
+                    result.push('\n');
+                }
+            }
+        }
+        result
+    }
 }
 fn spawn_pty(
     id: PaneId,

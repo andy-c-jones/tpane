@@ -6,7 +6,8 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::core::layout::{Layout, PaneId};
-use crate::traits::{AppEvent, EventSource, PaneBackend, PaneFactory, Renderer};
+use crate::core::selection::Selection;
+use crate::traits::{AppEvent, Clipboard, EventSource, PaneBackend, PaneFactory, Renderer};
 
 // ── HeadlessEventSource ──────────────────────────────────────────────────────
 
@@ -76,6 +77,7 @@ impl PaneBackend for HeadlessPaneBackend {
 /// Factory that creates HeadlessPaneBackend instances.
 pub struct HeadlessPaneFactory;
 
+
 impl PaneFactory<HeadlessPaneBackend> for HeadlessPaneFactory {
     fn spawn(&self, id: PaneId, cols: u16, rows: u16) -> Result<HeadlessPaneBackend> {
         Ok(HeadlessPaneBackend::new(id, cols, rows))
@@ -103,9 +105,34 @@ impl Renderer<HeadlessPaneBackend> for HeadlessRenderer {
         _panes: &HashMap<PaneId, HeadlessPaneBackend>,
         _terminal_size: (u16, u16),
         prefix_active: bool,
+        _selection: Option<&Selection>,
     ) -> Result<()> {
         self.frame_count += 1;
         self.last_cheatsheet_visible = prefix_active;
+        Ok(())
+    }
+}
+
+// ── HeadlessClipboard ────────────────────────────────────────────────────────
+
+/// In-memory clipboard for headless testing.
+pub struct HeadlessClipboard {
+    pub content: String,
+}
+
+impl HeadlessClipboard {
+    pub fn new() -> Self {
+        Self { content: String::new() }
+    }
+}
+
+impl Clipboard for HeadlessClipboard {
+    fn get_text(&mut self) -> Result<String> {
+        Ok(self.content.clone())
+    }
+
+    fn set_text(&mut self, text: &str) -> Result<()> {
+        self.content = text.to_string();
         Ok(())
     }
 }

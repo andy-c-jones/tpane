@@ -33,5 +33,6 @@ fn run(config: LuaConfig, tui: &mut renderer::Tui) -> Result<()> {
     let mut app = app::App::new(config.keymap, size, config.show_cheatsheet, &factory)?;
     let mut events = LiveEventSource::new(factory.event_rx());
     let mut renderer = LiveRenderer::new(tui);
-    app.run(&mut events, &mut renderer, &factory)
+    let mut clipboard = platform::clipboard::SystemClipboard::new();
+    app.run(&mut events, &mut renderer, &factory, &mut clipboard)
 }
