@@ -210,6 +210,10 @@ impl PaneState {
 
     /// Resize the PTY and the Term when the pane geometry changes.
     pub fn resize(&mut self, cols: u16, rows: u16) {
+        if self.cols == cols && self.rows == rows {
+            return;
+        }
+
         self.cols = cols;
         self.rows = rows;
         self.packed_size.store(pack_size(cols, rows), Ordering::Relaxed);
