@@ -46,6 +46,7 @@ struct PaneRenderCache {
 #[derive(Default)]
 pub struct RenderCache {
     pane_content: HashMap<PaneId, PaneRenderCache>,
+    pane_titles: HashMap<PaneId, (u64, Option<String>)>,
 }
 
 /// Enter raw mode and alternate screen, return a ratatui Terminal.
@@ -96,6 +97,7 @@ pub fn render(
         let pane_area_h = h.saturating_sub(cheatsheet_height);
         let (rects, dividers) = layout.compute_geometry(w, pane_area_h);
         cache.pane_content.retain(|id, _| rects.contains_key(id));
+        cache.pane_titles.retain(|id, _| rects.contains_key(id));
 
         for (pane_id, rect) in &rects {
             // Skip panes with no visible area (can happen during resize).
@@ -118,10 +120,22 @@ pub fn render(
             };
 
             // Use the terminal's OSC title if set, otherwise "tpane".
-            let pane_title = panes
-                .get(pane_id)
-                .map(|p| p.title())
-                .filter(|t| !t.is_empty());
+            let pane_title = panes.get(pane_id).and_then(|pane| {
+                let title_version = pane.title_version();
+                match cache.pane_titles.get(pane_id) {
+                    Some((cached_version, cached_title)) if *cached_version == title_version => {
+                        cached_title.clone()
+                    }
+                    _ => {
+                        let title = pane.title();
+                        let cached = if title.is_empty() { None } else { Some(title) };
+                        cache
+                            .pane_titles
+                            .insert(*pane_id, (title_version, cached.clone()));
+                        cached
+                    }
+                }
+            });
             let title = if is_active {
                 match &pane_title {
                     Some(t) => format!(" {} [active] ", t),

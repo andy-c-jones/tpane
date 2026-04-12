@@ -34,6 +34,7 @@ pub struct TpaneEventListener {
     #[allow(dead_code)]
     pane_id: PaneId,
     title: Arc<Mutex<String>>,
+    title_version: Arc<AtomicU64>,
     /// Used to write terminal responses (e.g. DA1 replies) back to the PTY.
     reply_tx: SyncSender<String>,
     /// Current pane size packed as `(cols as u32) << 16 | rows as u32`.
@@ -54,9 +55,11 @@ impl EventListener for TpaneEventListener {
         match event {
             TermEvent::Title(t) => {
                 *self.title.lock() = t;
+                self.title_version.fetch_add(1, Ordering::Relaxed);
             }
             TermEvent::ResetTitle => {
                 self.title.lock().clear();
+                self.title_version.fetch_add(1, Ordering::Relaxed);
             }
             // The terminal emulator needs to send a response back to the shell
             // (e.g. the DA1 Primary Device Attribute reply that fish waits for).
@@ -116,6 +119,8 @@ pub struct PaneState {
     packed_size: Arc<AtomicU32>,
     /// Monotonic counter incremented when terminal content might have changed.
     content_version: Arc<AtomicU64>,
+    /// Monotonic counter incremented when pane title changes.
+    title_version: Arc<AtomicU64>,
 }
 
 impl PaneState {
@@ -141,10 +146,12 @@ impl PaneState {
             ..TermConfig::default()
         };
         let title: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let title_version = Arc::new(AtomicU64::new(0));
         let listener = TpaneEventListener {
             sender: event_tx.clone(),
             pane_id: id,
             title: title.clone(),
+            title_version: title_version.clone(),
             reply_tx,
             packed_size: packed_size.clone(),
         };
@@ -198,6 +205,7 @@ impl PaneState {
             title,
             packed_size,
             content_version,
+            title_version,
         })
     }
 
@@ -258,6 +266,11 @@ impl PaneState {
     /// Monotonic counter of terminal content mutations.
     pub fn content_version(&self) -> u64 {
         self.content_version.load(Ordering::Relaxed)
+    }
+
+    /// Monotonic counter of title mutations.
+    pub fn title_version(&self) -> u64 {
+        self.title_version.load(Ordering::Relaxed)
     }
 
     /// Extract text from the terminal grid between two pane-grid-local positions.
