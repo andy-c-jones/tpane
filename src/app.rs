@@ -88,36 +88,47 @@ impl<B: PaneBackend> App<B> {
         factory: &F,
         clipboard: &mut dyn Clipboard,
     ) -> Result<()> {
+        let mut needs_render = true;
         while self.running {
-            let show_bar = self.prefix_active && self.show_cheatsheet;
-            renderer.render(
-                &self.layout,
-                &self.panes,
-                &self.keymap,
-                self.terminal_size,
-                show_bar,
-                self.selection.as_ref(),
-            )?;
+            if needs_render {
+                let show_bar = self.prefix_active && self.show_cheatsheet;
+                renderer.render(
+                    &self.layout,
+                    &self.panes,
+                    &self.keymap,
+                    self.terminal_size,
+                    show_bar,
+                    self.selection.as_ref(),
+                )?;
+                needs_render = false;
+            }
 
             match events.next_event(Duration::from_millis(16))? {
                 Some(AppEvent::Key(key)) if key.kind == KeyEventKind::Press => {
                     self.handle_key(key, factory, clipboard)?;
+                    needs_render = true;
                 }
                 // Repeat events are only forwarded to direct bindings and raw PTY input;
                 // prefix-key and global-shortcut handling is guarded inside handle_key.
                 Some(AppEvent::Key(key)) if key.kind == KeyEventKind::Repeat => {
                     self.handle_key_repeat(key, factory)?;
+                    needs_render = true;
                 }
                 Some(AppEvent::Mouse(mouse)) => {
                     self.handle_mouse(mouse, clipboard);
+                    needs_render = true;
                 }
                 Some(AppEvent::Resize(w, h)) => {
                     self.handle_resize(w, h);
+                    needs_render = true;
                 }
-                Some(AppEvent::PaneData { .. }) => {}
+                Some(AppEvent::PaneData { .. }) => {
+                    needs_render = true;
+                }
                 Some(AppEvent::PaneExit { pane_id }) => {
                     if self.panes.contains_key(&pane_id) {
                         self.close_pane(pane_id);
+                        needs_render = true;
                     }
                 }
                 _ => {}
