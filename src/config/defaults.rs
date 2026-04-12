@@ -59,7 +59,7 @@ tpane.bind_direct("alt+shift+down",  "resize_down")
 --
 -- tpane.on_startup(function()
 --   tpane.split_right()   -- creates left (50%) | right (50%)
---   tpane.split_right()   -- splits right half: centre (50%) | far-right (50%)
+--   tpane.split_right()   -- splits right half: center (50%) | far-right (50%)
 -- end)
 
 -- 3-pane layout (one wide left column + two stacked rows on the right):
