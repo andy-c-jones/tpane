@@ -72,7 +72,7 @@ pub fn render(
             0
         };
         let pane_area_h = h.saturating_sub(cheatsheet_height);
-        let rects = layout.compute_rects(w, pane_area_h);
+        let (rects, dividers) = layout.compute_geometry(w, pane_area_h);
 
         for (pane_id, rect) in &rects {
             // Skip panes with no visible area (can happen during resize).
@@ -164,7 +164,6 @@ pub fn render(
         }
 
         // Render subtle grab-handle dots on each divider so users know they're draggable.
-        let dividers = layout.compute_dividers(w, pane_area_h);
         let handle_style = Style::default().fg(Color::DarkGray);
         let buf = frame.buffer_mut();
         for div in &dividers {

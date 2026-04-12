@@ -232,6 +232,28 @@ impl Layout {
         dividers
     }
 
+    /// Compute pane rects and divider metadata in a single tree traversal.
+    pub fn compute_geometry(
+        &self,
+        width: u16,
+        height: u16,
+    ) -> (HashMap<PaneId, Rect>, Vec<DividerInfo>) {
+        let mut rects = HashMap::new();
+        let mut dividers = Vec::new();
+        collect_geometry(
+            &self.root,
+            Rect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
+            &mut rects,
+            &mut dividers,
+        );
+        (rects, dividers)
+    }
+
     /// Adjust the ratio of the innermost split (with `orientation`) that contains `pane_id`.
     /// Positive `delta` moves the split toward the end of that axis (right/down);
     /// negative `delta` moves it toward the start (left/up).
@@ -472,6 +494,64 @@ fn collect_dividers(node: &Node, rect: Rect, dividers: &mut Vec<DividerInfo>) {
 
             collect_dividers(first, r1, dividers);
             collect_dividers(second, r2, dividers);
+        }
+    }
+}
+
+/// Collect pane rects and divider infos in one pass; returns first leaf ID in this subtree.
+fn collect_geometry(
+    node: &Node,
+    rect: Rect,
+    rects: &mut HashMap<PaneId, Rect>,
+    dividers: &mut Vec<DividerInfo>,
+) -> PaneId {
+    match node {
+        Node::Leaf(id) => {
+            rects.insert(*id, rect);
+            *id
+        }
+        Node::Split {
+            orientation,
+            ratio,
+            first,
+            second,
+        } => {
+            let (r1, r2) = split_rect(rect, *orientation, *ratio);
+            let first_leaf = collect_geometry(first, r1, rects, dividers);
+            let second_leaf = collect_geometry(second, r2, rects, dividers);
+
+            let has_divider = match orientation {
+                Orientation::Vertical => r2.x > r1.x + r1.width,
+                Orientation::Horizontal => r2.y > r1.y + r1.height,
+            };
+
+            if has_divider {
+                let info = match orientation {
+                    Orientation::Vertical => DividerInfo {
+                        orientation: Orientation::Vertical,
+                        position: r1.x + r1.width,
+                        span_start: rect.y,
+                        span_end: rect.y + rect.height,
+                        first_pane: first_leaf,
+                        second_pane: second_leaf,
+                        rect_start: rect.x,
+                        rect_size: rect.width,
+                    },
+                    Orientation::Horizontal => DividerInfo {
+                        orientation: Orientation::Horizontal,
+                        position: r1.y + r1.height,
+                        span_start: rect.x,
+                        span_end: rect.x + rect.width,
+                        first_pane: first_leaf,
+                        second_pane: second_leaf,
+                        rect_start: rect.y,
+                        rect_size: rect.height,
+                    },
+                };
+                dividers.push(info);
+            }
+
+            first_leaf
         }
     }
 }
@@ -1053,6 +1133,69 @@ mod tests {
         layout.split(Orientation::Vertical);
         let dividers = layout.compute_dividers(120, 40);
         assert_eq!(dividers.len(), 2);
+    }
+
+    #[test]
+    fn compute_geometry_matches_rects_and_dividers() {
+        let mut layout = Layout::new();
+        layout.split(Orientation::Vertical);
+        layout.split(Orientation::Horizontal);
+        layout.focus_prev();
+        layout.split(Orientation::Vertical);
+
+        let (rects, dividers) = layout.compute_geometry(120, 40);
+        let rects_ref = layout.compute_rects(120, 40);
+        let dividers_ref = layout.compute_dividers(120, 40);
+
+        assert_eq!(rects.len(), rects_ref.len());
+        for (id, rect) in &rects_ref {
+            let got = rects.get(id).expect("missing pane rect from compute_geometry");
+            assert_eq!(got.x, rect.x);
+            assert_eq!(got.y, rect.y);
+            assert_eq!(got.width, rect.width);
+            assert_eq!(got.height, rect.height);
+        }
+
+        let mut keys: Vec<(u8, u16, u16, u16, u32, u32, u16, u16)> = dividers
+            .iter()
+            .map(|d| {
+                (
+                    match d.orientation {
+                        Orientation::Vertical => 0,
+                        Orientation::Horizontal => 1,
+                    },
+                    d.position,
+                    d.span_start,
+                    d.span_end,
+                    d.first_pane.0,
+                    d.second_pane.0,
+                    d.rect_start,
+                    d.rect_size,
+                )
+            })
+            .collect();
+        let mut keys_ref: Vec<(u8, u16, u16, u16, u32, u32, u16, u16)> =
+            dividers_ref
+                .iter()
+                .map(|d| {
+                    (
+                        match d.orientation {
+                            Orientation::Vertical => 0,
+                            Orientation::Horizontal => 1,
+                        },
+                        d.position,
+                        d.span_start,
+                        d.span_end,
+                        d.first_pane.0,
+                        d.second_pane.0,
+                        d.rect_start,
+                        d.rect_size,
+                    )
+                })
+                .collect();
+        keys.sort();
+        keys_ref.sort();
+        assert_eq!(keys, keys_ref);
     }
 
     // ── set_split_ratio ───────────────────────────────────────────────────────
