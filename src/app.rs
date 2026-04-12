@@ -108,14 +108,12 @@ impl<B: PaneBackend> App<B> {
 
             match events.next_event(Duration::from_millis(16))? {
                 Some(AppEvent::Key(key)) if key.kind == KeyEventKind::Press => {
-                    self.handle_key(key, factory, clipboard)?;
-                    needs_render = true;
+                    needs_render |= self.handle_key(key, factory, clipboard)?;
                 }
                 // Repeat events are only forwarded to direct bindings and raw PTY input;
                 // prefix-key and global-shortcut handling is guarded inside handle_key.
                 Some(AppEvent::Key(key)) if key.kind == KeyEventKind::Repeat => {
-                    self.handle_key_repeat(key, factory)?;
-                    needs_render = true;
+                    needs_render |= self.handle_key_repeat(key, factory)?;
                 }
                 Some(AppEvent::Mouse(mouse)) => {
                     self.handle_mouse(mouse, clipboard);
@@ -145,10 +143,10 @@ impl<B: PaneBackend> App<B> {
         key: crossterm::event::KeyEvent,
         factory: &F,
         clipboard: &mut dyn Clipboard,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // Global shortcuts that work regardless of prefix mode.
         if self.handle_global_shortcuts(&key, clipboard)? {
-            return Ok(());
+            return Ok(true);
         }
 
         if self.prefix_active {
@@ -156,19 +154,19 @@ impl<B: PaneBackend> App<B> {
             if let Some(cmd) = self.keymap.lookup_prefix(&key).cloned() {
                 self.dispatch(cmd, factory)?;
             }
-            return Ok(());
+            return Ok(true);
         }
 
         // Check for prefix key.
         if self.keymap.is_prefix(&key) {
             self.prefix_active = true;
-            return Ok(());
+            return Ok(true);
         }
 
         // Check direct bindings (holdable; work without prefix key).
         if let Some(cmd) = self.keymap.lookup_direct(&key).cloned() {
             self.dispatch(cmd, factory)?;
-            return Ok(());
+            return Ok(true);
         }
 
         // Forward raw bytes to the active pane.
@@ -176,8 +174,9 @@ impl<B: PaneBackend> App<B> {
             if let Some(pane) = self.panes.get_mut(&self.layout.active) {
                 pane.write_input(&bytes)?;
             }
+            return Ok(false);
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Handle key-repeat events: only direct bindings and raw PTY forwarding fire on repeat.
@@ -186,11 +185,11 @@ impl<B: PaneBackend> App<B> {
         &mut self,
         key: crossterm::event::KeyEvent,
         factory: &F,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // Direct bindings fire on repeat so they can be held to move edges continuously.
         if let Some(cmd) = self.keymap.lookup_direct(&key).cloned() {
             self.dispatch(cmd, factory)?;
-            return Ok(());
+            return Ok(true);
         }
 
         // Forward raw bytes to the active pane (e.g. holding a character key).
@@ -198,8 +197,9 @@ impl<B: PaneBackend> App<B> {
             if let Some(pane) = self.panes.get_mut(&self.layout.active) {
                 pane.write_input(&bytes)?;
             }
+            return Ok(false);
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Handle global shortcuts (Ctrl+Shift+C/V) that work in any mode.
@@ -673,10 +673,10 @@ impl<B: PaneBackend> App<B> {
     ) -> Result<()> {
         match event {
             AppEvent::Key(key) if key.kind == KeyEventKind::Press => {
-                self.handle_key(key, factory, clipboard)?;
+                let _ = self.handle_key(key, factory, clipboard)?;
             }
             AppEvent::Key(key) if key.kind == KeyEventKind::Repeat => {
-                self.handle_key_repeat(key, factory)?;
+                let _ = self.handle_key_repeat(key, factory)?;
             }
             AppEvent::Mouse(mouse) => {
                 self.handle_mouse(mouse, clipboard);
