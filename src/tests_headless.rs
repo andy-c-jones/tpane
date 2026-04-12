@@ -449,6 +449,15 @@ mod tests {
         })
     }
 
+    fn key_repeat(code: KeyCode, mods: KeyModifiers) -> AppEvent {
+        AppEvent::Key(KeyEvent {
+            code,
+            modifiers: mods,
+            kind: KeyEventKind::Repeat,
+            state: KeyEventState::empty(),
+        })
+    }
+
     #[test]
     fn mouse_click_changes_active_pane() {
         let (mut app, factory, mut clip) = default_app();
@@ -692,5 +701,110 @@ mod tests {
 
         prefix_then(&mut app, &factory, &mut clip, KeyCode::Up, KeyModifiers::empty());
         assert_eq!(app.active_pane(), only);
+    }
+
+    // ── resize via direct bindings (hotkeys) ─────────────────────────────────
+
+    #[test]
+    fn resize_direct_binding_changes_pane_size() {
+        let (mut app, factory, mut clip) = default_app();
+        // Split to create two panes
+        prefix_then(&mut app, &factory, &mut clip, KeyCode::Right, KeyModifiers::CONTROL);
+        let active = app.active_pane();
+
+        let (w, h) = TERM_SIZE;
+        let rects_before = app.layout.compute_rects(w, h);
+        let w_before = rects_before[&active].width;
+
+        // Fire a resize_right direct binding (Alt+Shift+Right)
+        let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
+        app.process_event(key_press(KeyCode::Right, alt_shift), &factory, &mut clip).unwrap();
+
+        let rects_after = app.layout.compute_rects(w, h);
+        let w_after = rects_after[&active].width;
+        assert!(w_after > w_before, "active pane should grow after resize_right");
+    }
+
+    #[test]
+    fn resize_repeat_event_continues_resize() {
+        let (mut app, factory, mut clip) = default_app();
+        prefix_then(&mut app, &factory, &mut clip, KeyCode::Right, KeyModifiers::CONTROL);
+        let active = app.active_pane();
+        let (w, h) = TERM_SIZE;
+
+        let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
+        // Press once
+        app.process_event(key_press(KeyCode::Right, alt_shift), &factory, &mut clip).unwrap();
+        let w_after_press = app.layout.compute_rects(w, h)[&active].width;
+
+        // Repeat (simulates holding the key)
+        app.process_event(key_repeat(KeyCode::Right, alt_shift), &factory, &mut clip).unwrap();
+        let w_after_repeat = app.layout.compute_rects(w, h)[&active].width;
+        assert!(w_after_repeat > w_after_press, "repeat event should continue resizing");
+    }
+
+    #[test]
+    fn prefix_key_repeat_does_not_disturb_prefix_mode() {
+        let (mut app, factory, mut clip) = default_app();
+        // Activate prefix
+        app.process_event(key_press(KeyCode::Char('b'), KeyModifiers::CONTROL), &factory, &mut clip).unwrap();
+        assert!(app.is_prefix_active());
+
+        // Holding Ctrl+B (repeat) should NOT toggle prefix off
+        app.process_event(key_repeat(KeyCode::Char('b'), KeyModifiers::CONTROL), &factory, &mut clip).unwrap();
+        assert!(app.is_prefix_active(), "prefix should still be active after Ctrl+B repeat");
+    }
+
+    // ── mouse divider drag (resize) ──────────────────────────────────────────
+
+    #[test]
+    fn divider_drag_changes_pane_widths() {
+        let (mut app, factory, mut clip) = default_app();
+        // Create a vertical split on an 80×24 terminal
+        prefix_then(&mut app, &factory, &mut clip, KeyCode::Right, KeyModifiers::CONTROL);
+        assert_eq!(app.pane_count(), 2);
+
+        let (w, h) = TERM_SIZE; // 80×24
+
+        // Find the divider position
+        let dividers = app.layout.compute_dividers(w, h);
+        assert_eq!(dividers.len(), 1);
+        let div = &dividers[0];
+        // Divider gap column; span covers all rows
+        let div_col = div.position;
+
+        // Record widths before drag
+        let rects_before = app.layout.compute_rects(w, h);
+        let ids = app.layout.leaf_ids();
+        let left_w_before = rects_before[&ids[0]].width;
+
+        // Simulate: click on the divider, drag to the right, release
+        app.process_event(mouse_click(div_col, div.span_start + 1), &factory, &mut clip).unwrap();
+        // Drag toward the right to make the left pane bigger
+        let new_col = div_col + 5;
+        app.process_event(mouse_drag(new_col, div.span_start + 1), &factory, &mut clip).unwrap();
+        app.process_event(mouse_up(new_col, div.span_start + 1), &factory, &mut clip).unwrap();
+
+        let rects_after = app.layout.compute_rects(w, h);
+        let left_w_after = rects_after[&ids[0]].width;
+        assert!(left_w_after > left_w_before,
+            "left pane should be wider after dragging divider right: before={left_w_before}, after={left_w_after}");
+    }
+
+    #[test]
+    fn divider_drag_does_not_create_selection() {
+        let (mut app, factory, mut clip) = default_app();
+        prefix_then(&mut app, &factory, &mut clip, KeyCode::Right, KeyModifiers::CONTROL);
+
+        let (w, h) = TERM_SIZE;
+        let dividers = app.layout.compute_dividers(w, h);
+        let div = &dividers[0];
+        let div_col = div.position;
+
+        app.process_event(mouse_click(div_col, div.span_start + 1), &factory, &mut clip).unwrap();
+        app.process_event(mouse_drag(div_col + 3, div.span_start + 1), &factory, &mut clip).unwrap();
+        app.process_event(mouse_up(div_col + 3, div.span_start + 1), &factory, &mut clip).unwrap();
+
+        assert!(app.selection.is_none(), "divider drag should not create a text selection");
     }
 }

@@ -348,14 +348,6 @@ fn first_leaf_id(node: &Node) -> PaneId {
     }
 }
 
-/// Return true if `node` contains a leaf with `pane_id`.
-fn contains_pane(node: &Node, pane_id: PaneId) -> bool {
-    match node {
-        Node::Leaf(id) => *id == pane_id,
-        Node::Split { first, second, .. } => contains_pane(first, pane_id) || contains_pane(second, pane_id),
-    }
-}
-
 /// Collect all divider infos by recursively walking the layout tree.
 fn collect_dividers(node: &Node, rect: Rect, dividers: &mut Vec<DividerInfo>) {
     match node {
@@ -401,31 +393,49 @@ fn collect_dividers(node: &Node, rect: Rect, dividers: &mut Vec<DividerInfo>) {
     }
 }
 
+/// Single-pass inner helper: returns `(contains_pane, was_adjusted)`.
+/// Traverses deepest-first so the innermost matching split wins.
+fn adjust_ratio_in_inner(
+    node: &mut Node,
+    pane_id: PaneId,
+    orientation: Orientation,
+    delta: f64,
+) -> (bool, bool) {
+    match node {
+        Node::Leaf(id) => (*id == pane_id, false),
+        Node::Split { orientation: o, ratio, first, second } => {
+            // Recurse so we learn containment and whether a deeper split already handled it.
+            let (first_contains, first_adjusted) =
+                adjust_ratio_in_inner(first, pane_id, orientation, delta);
+            let (second_contains, second_adjusted) =
+                adjust_ratio_in_inner(second, pane_id, orientation, delta);
+            let contains = first_contains || second_contains;
+
+            // A deeper split already handled the resize; propagate upward.
+            if first_adjusted || second_adjusted {
+                return (contains, true);
+            }
+
+            // No deeper match: try this node using containment info already computed.
+            if *o == orientation {
+                if first_contains {
+                    *ratio = (*ratio + delta).clamp(0.05, 0.95);
+                    return (true, true);
+                } else if second_contains {
+                    *ratio = (*ratio - delta).clamp(0.05, 0.95);
+                    return (true, true);
+                }
+            }
+
+            (contains, false)
+        }
+    }
+}
+
 /// Adjust the ratio of the innermost split with `orientation` that contains `pane_id`.
 /// Recurses deepest-first so the innermost ancestor is adjusted.
 fn adjust_ratio_in(node: &mut Node, pane_id: PaneId, orientation: Orientation, delta: f64) -> bool {
-    match node {
-        Node::Leaf(_) => false,
-        Node::Split { orientation: o, ratio, first, second } => {
-            // Try to adjust a deeper split first (innermost wins).
-            let found = adjust_ratio_in(first, pane_id, orientation, delta)
-                || adjust_ratio_in(second, pane_id, orientation, delta);
-            if found {
-                return true;
-            }
-            // No deeper match: try this node.
-            if *o == orientation {
-                if contains_pane(first, pane_id) {
-                    *ratio = (*ratio + delta).clamp(0.05, 0.95);
-                    return true;
-                } else if contains_pane(second, pane_id) {
-                    *ratio = (*ratio - delta).clamp(0.05, 0.95);
-                    return true;
-                }
-            }
-            false
-        }
-    }
+    adjust_ratio_in_inner(node, pane_id, orientation, delta).1
 }
 
 /// Set the ratio for the split whose first/second subtrees start with the given leaf IDs.

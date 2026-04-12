@@ -91,10 +91,13 @@ impl<B: PaneBackend> App<B> {
             renderer.render(&self.layout, &self.panes, self.terminal_size, show_bar, self.selection.as_ref())?;
 
             match events.next_event(Duration::from_millis(16))? {
-                Some(AppEvent::Key(key)) if key.kind == KeyEventKind::Press
-                    || key.kind == KeyEventKind::Repeat =>
-                {
+                Some(AppEvent::Key(key)) if key.kind == KeyEventKind::Press => {
                     self.handle_key(key, factory, clipboard)?;
+                }
+                // Repeat events are only forwarded to direct bindings and raw PTY input;
+                // prefix-key and global-shortcut handling is guarded inside handle_key.
+                Some(AppEvent::Key(key)) if key.kind == KeyEventKind::Repeat => {
+                    self.handle_key_repeat(key, factory)?;
                 }
                 Some(AppEvent::Mouse(mouse)) => {
                     self.handle_mouse(mouse, clipboard);
@@ -146,6 +149,28 @@ impl<B: PaneBackend> App<B> {
         }
 
         // Forward raw bytes to the active pane.
+        if let Some(bytes) = key_event_to_bytes(&key) {
+            if let Some(pane) = self.panes.get_mut(&self.layout.active) {
+                pane.write_input(&bytes)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle key-repeat events: only direct bindings and raw PTY forwarding fire on repeat.
+    /// Prefix-key logic and global shortcuts are intentionally excluded.
+    fn handle_key_repeat<F: PaneFactory<B>>(
+        &mut self,
+        key: crossterm::event::KeyEvent,
+        factory: &F,
+    ) -> Result<()> {
+        // Direct bindings fire on repeat so they can be held to move edges continuously.
+        if let Some(cmd) = self.keymap.lookup_direct(&key).cloned() {
+            self.dispatch(cmd, factory)?;
+            return Ok(());
+        }
+
+        // Forward raw bytes to the active pane (e.g. holding a character key).
         if let Some(bytes) = key_event_to_bytes(&key) {
             if let Some(pane) = self.panes.get_mut(&self.layout.active) {
                 pane.write_input(&bytes)?;
@@ -497,10 +522,11 @@ impl<B: PaneBackend> App<B> {
         clipboard: &mut dyn Clipboard,
     ) -> Result<()> {
         match event {
-            AppEvent::Key(key) if key.kind == KeyEventKind::Press
-                || key.kind == KeyEventKind::Repeat =>
-            {
+            AppEvent::Key(key) if key.kind == KeyEventKind::Press => {
                 self.handle_key(key, factory, clipboard)?;
+            }
+            AppEvent::Key(key) if key.kind == KeyEventKind::Repeat => {
+                self.handle_key_repeat(key, factory)?;
             }
             AppEvent::Mouse(mouse) => {
                 self.handle_mouse(mouse, clipboard);

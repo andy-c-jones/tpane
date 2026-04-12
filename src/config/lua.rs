@@ -111,7 +111,11 @@ impl LuaConfig {
             tpane_table.set("on_startup", on_startup_fn).map_err(lua_err)?;
 
             // Expose split helpers for use inside on_startup.
-            for name in &["split_vertical", "split_horizontal", "close", "focus_next", "focus_prev"] {
+            for name in &[
+                "split_vertical", "split_horizontal",
+                "split_left", "split_right", "split_up", "split_down",
+                "close", "focus_next", "focus_prev",
+            ] {
                 let n = *name;
                 let b = bindings_ref.clone();
                 let stub = lua.create_function(move |_, ()| {
@@ -304,6 +308,79 @@ end)
     fn cheatsheet_can_be_disabled_via_lua() {
         let cfg = LuaConfig::load_from_source("tpane.show_cheatsheet = false").unwrap();
         assert!(!cfg.show_cheatsheet);
+    }
+
+    // ── bind_direct ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn bind_direct_adds_direct_binding() {
+        let src = r#"tpane.bind_direct("alt+r", "resize_right")"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        let event = crossterm::event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT);
+        assert_eq!(cfg.keymap.lookup_direct(&event), Some(&Command::ResizeRight));
+    }
+
+    #[test]
+    fn bind_direct_does_not_add_prefix_binding() {
+        let src = r#"tpane.bind_direct("alt+r", "resize_right")"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        let event = crossterm::event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT);
+        assert!(cfg.keymap.lookup_prefix(&event).is_none());
+    }
+
+    #[test]
+    fn bind_direct_unknown_command_is_silently_ignored() {
+        let src = r#"tpane.bind_direct("alt+r", "not_a_command")"#;
+        let result = LuaConfig::load_from_source(src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn bind_direct_bad_chord_is_silently_ignored() {
+        let src = r#"tpane.bind_direct("not+a+chord", "resize_right")"#;
+        let result = LuaConfig::load_from_source(src);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn default_config_has_resize_direct_bindings() {
+        let cfg = LuaConfig::load_from_source(DEFAULT_CONFIG).unwrap();
+        let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
+        let cases: &[(KeyCode, Command)] = &[
+            (KeyCode::Left,  Command::ResizeLeft),
+            (KeyCode::Right, Command::ResizeRight),
+            (KeyCode::Up,    Command::ResizeUp),
+            (KeyCode::Down,  Command::ResizeDown),
+        ];
+        for (code, expected) in cases {
+            let event = crossterm::event::KeyEvent::new(*code, alt_shift);
+            assert_eq!(cfg.keymap.lookup_direct(&event), Some(expected),
+                "missing direct binding for {code:?}");
+        }
+    }
+
+    // ── on_startup with split_right / split_down ──────────────────────────────
+
+    #[test]
+    fn on_startup_split_right_records_command() {
+        let src = r#"
+tpane.on_startup(function()
+  tpane.split_right()
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        assert_eq!(cfg.startup_commands, vec![Command::SplitRight]);
+    }
+
+    #[test]
+    fn on_startup_split_down_records_command() {
+        let src = r#"
+tpane.on_startup(function()
+  tpane.split_down()
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        assert_eq!(cfg.startup_commands, vec![Command::SplitDown]);
     }
 }
 

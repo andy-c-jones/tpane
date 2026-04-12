@@ -12,8 +12,12 @@ pub const DEFAULT_CONFIG: &str = r#"-- tpane configuration
 --   "split_vertical"   - split the active pane vertically (alias for split_right)
 --   "split_horizontal" - split the active pane horizontally (alias for split_down)
 --   "close"            - close the active pane
---   "focus_next"       - move focus to next pane
---   "focus_prev"       - move focus to previous pane
+--   "focus_next"       - move focus to next pane (cycle)
+--   "focus_prev"       - move focus to previous pane (cycle)
+--   "focus_left"       - move focus to the nearest pane to the left
+--   "focus_right"      - move focus to the nearest pane to the right
+--   "focus_up"         - move focus to the nearest pane above
+--   "focus_down"       - move focus to the nearest pane below
 --   "resize_left"      - grow the active pane to the left
 --   "resize_right"     - grow the active pane to the right
 --   "resize_up"        - grow the active pane upward
@@ -53,13 +57,13 @@ tpane.bind_direct("alt+shift+down",  "resize_down")
 --   tpane.split_right()
 -- end)
 
--- 3-column layout (25% | 50% | 25%):
--- After splitting, adjust the ratios in ~/.config/tpane/main.lua or drag
--- the dividers with the mouse to fine-tune.
+-- 3-column layout (50% | 25% | 25%):
+-- Drag the dividers with the mouse or use Alt+Shift+Arrows after startup
+-- to adjust proportions (e.g. to achieve a wide center column).
 --
 -- tpane.on_startup(function()
 --   tpane.split_right()   -- creates left (50%) | right (50%)
---   tpane.split_right()   -- splits right half: center (50%) | far-right (50%)
+--   tpane.split_right()   -- splits the right half into two equal quarters
 -- end)
 
 -- 3-pane layout (one wide left column + two stacked rows on the right):
