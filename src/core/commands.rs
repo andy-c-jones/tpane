@@ -14,6 +14,10 @@ pub enum Command {
     ClosePane,
     FocusNext,
     FocusPrev,
+    FocusLeft,
+    FocusRight,
+    FocusUp,
+    FocusDown,
     Quit,
 }
 
@@ -31,6 +35,10 @@ impl Command {
             "close" | "close_pane" => Some(Self::ClosePane),
             "focus_next" => Some(Self::FocusNext),
             "focus_prev" => Some(Self::FocusPrev),
+            "focus_left" => Some(Self::FocusLeft),
+            "focus_right" => Some(Self::FocusRight),
+            "focus_up" => Some(Self::FocusUp),
+            "focus_down" => Some(Self::FocusDown),
             "quit" => Some(Self::Quit),
             _ => None,
         }
@@ -55,6 +63,10 @@ mod tests {
             ("close_pane",       Command::ClosePane),
             ("focus_next",       Command::FocusNext),
             ("focus_prev",       Command::FocusPrev),
+            ("focus_left",       Command::FocusLeft),
+            ("focus_right",      Command::FocusRight),
+            ("focus_up",         Command::FocusUp),
+            ("focus_down",       Command::FocusDown),
             ("quit",             Command::Quit),
         ];
         for (name, expected) in cases {

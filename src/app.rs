@@ -6,7 +6,7 @@ use crossterm::event::{KeyEventKind, MouseEventKind, MouseButton, KeyCode, KeyMo
 
 use crate::core::commands::Command;
 use crate::core::keymap::KeyMap;
-use crate::core::layout::{Layout, Orientation, PaneId, SplitPosition};
+use crate::core::layout::{Direction, Layout, Orientation, PaneId, SplitPosition};
 use crate::core::selection::Selection;
 use crate::platform::renderer::{key_event_to_bytes, cheatsheet_bar_height};
 use crate::traits::{AppEvent, Clipboard, EventSource, PaneBackend, PaneFactory, Renderer};
@@ -201,6 +201,10 @@ impl<B: PaneBackend> App<B> {
             }
             Command::FocusNext => self.layout.focus_next(),
             Command::FocusPrev => self.layout.focus_prev(),
+            Command::FocusLeft => self.layout.focus_direction(Direction::Left, self.terminal_size),
+            Command::FocusRight => self.layout.focus_direction(Direction::Right, self.terminal_size),
+            Command::FocusUp => self.layout.focus_direction(Direction::Up, self.terminal_size),
+            Command::FocusDown => self.layout.focus_direction(Direction::Down, self.terminal_size),
             Command::Quit => self.running = false,
         }
         Ok(())

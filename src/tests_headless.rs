@@ -205,31 +205,38 @@ mod tests {
     // ── focus (prefix + Arrow) ───────────────────────────────────────────────
 
     #[test]
-    fn focus_right_cycles_through_panes() {
+    fn focus_right_moves_spatially() {
         let (mut app, factory, mut clip) = default_app();
         let first = app.active_pane();
+        // Split right → two panes side by side, active is right (second)
         prefix_then(&mut app, &factory, &mut clip, KeyCode::Right, KeyModifiers::CONTROL);
         let second = app.active_pane();
 
-        prefix_then(&mut app, &factory, &mut clip, KeyCode::Right, KeyModifiers::empty());
+        // Focus left from second → first (left pane)
+        prefix_then(&mut app, &factory, &mut clip, KeyCode::Left, KeyModifiers::empty());
         assert_eq!(app.active_pane(), first);
 
+        // Focus right from first → second (right pane)
         prefix_then(&mut app, &factory, &mut clip, KeyCode::Right, KeyModifiers::empty());
         assert_eq!(app.active_pane(), second);
     }
 
     #[test]
-    fn focus_left_cycles_through_panes() {
+    fn focus_left_moves_spatially() {
         let (mut app, factory, mut clip) = default_app();
         let first = app.active_pane();
+        // Split right → active is right (second)
         prefix_then(&mut app, &factory, &mut clip, KeyCode::Right, KeyModifiers::CONTROL);
         let second = app.active_pane();
+        assert_ne!(first, second);
 
+        // Focus left from second → first
         prefix_then(&mut app, &factory, &mut clip, KeyCode::Left, KeyModifiers::empty());
         assert_eq!(app.active_pane(), first);
 
+        // Focus left from first → stays (nothing further left)
         prefix_then(&mut app, &factory, &mut clip, KeyCode::Left, KeyModifiers::empty());
-        assert_eq!(app.active_pane(), second);
+        assert_eq!(app.active_pane(), first);
     }
 
     // ── quit (prefix + q) ────────────────────────────────────────────────────
@@ -630,5 +637,60 @@ mod tests {
         // No input should have been written to the pane (headless has no grid content to copy)
         let active = app.active_pane();
         assert!(app.panes[&active].input_log.is_empty());
+    }
+
+    // === Spatial navigation tests ===
+
+    #[test]
+    fn spatial_nav_three_pane_left_from_bottom_right() {
+        // Layout: one pane on left, two stacked on right.
+        // Left arrow from bottom-right should go to the left pane, not up.
+        let (mut app, factory, mut clip) = default_app();
+        let left_pane = app.active_pane();
+
+        // Split right → creates right pane, focus moves to it
+        prefix_then(&mut app, &factory, &mut clip, KeyCode::Right, KeyModifiers::CONTROL);
+        let top_right = app.active_pane();
+        assert_ne!(left_pane, top_right);
+
+        // Split down from top-right → creates bottom-right, focus moves to it
+        prefix_then(&mut app, &factory, &mut clip, KeyCode::Down, KeyModifiers::CONTROL);
+        let bottom_right = app.active_pane();
+        assert_ne!(top_right, bottom_right);
+
+        // Now from bottom-right, press Left → should go to left_pane (not up to top_right)
+        prefix_then(&mut app, &factory, &mut clip, KeyCode::Left, KeyModifiers::empty());
+        assert_eq!(app.active_pane(), left_pane);
+    }
+
+    #[test]
+    fn spatial_nav_up_down_in_stacked_panes() {
+        let (mut app, factory, mut clip) = default_app();
+        let top = app.active_pane();
+
+        // Split down → creates bottom pane
+        prefix_then(&mut app, &factory, &mut clip, KeyCode::Down, KeyModifiers::CONTROL);
+        let bottom = app.active_pane();
+
+        // Up from bottom → top
+        prefix_then(&mut app, &factory, &mut clip, KeyCode::Up, KeyModifiers::empty());
+        assert_eq!(app.active_pane(), top);
+
+        // Down from top → bottom
+        prefix_then(&mut app, &factory, &mut clip, KeyCode::Down, KeyModifiers::empty());
+        assert_eq!(app.active_pane(), bottom);
+    }
+
+    #[test]
+    fn spatial_nav_no_movement_when_no_pane_in_direction() {
+        // Single pane: pressing any direction should stay on same pane
+        let (mut app, factory, mut clip) = default_app();
+        let only = app.active_pane();
+
+        prefix_then(&mut app, &factory, &mut clip, KeyCode::Left, KeyModifiers::empty());
+        assert_eq!(app.active_pane(), only);
+
+        prefix_then(&mut app, &factory, &mut clip, KeyCode::Up, KeyModifiers::empty());
+        assert_eq!(app.active_pane(), only);
     }
 }

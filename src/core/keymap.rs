@@ -124,11 +124,11 @@ impl Default for KeyMap {
             ("ctrl+right", Command::SplitRight),
             ("ctrl+up",    Command::SplitUp),
             ("ctrl+down",  Command::SplitDown),
-            // Focus movement: Arrow after prefix
-            ("left",  Command::FocusPrev),
-            ("right", Command::FocusNext),
-            ("up",    Command::FocusPrev),
-            ("down",  Command::FocusNext),
+            // Focus movement: Arrow after prefix (spatial navigation)
+            ("left",  Command::FocusLeft),
+            ("right", Command::FocusRight),
+            ("up",    Command::FocusUp),
+            ("down",  Command::FocusDown),
             // Other commands
             ("w", Command::ClosePane),
             ("q", Command::Quit),
@@ -291,10 +291,10 @@ mod tests {
             (KeyCode::Right, KeyModifiers::CONTROL, Command::SplitRight),
             (KeyCode::Up,    KeyModifiers::CONTROL, Command::SplitUp),
             (KeyCode::Down,  KeyModifiers::CONTROL, Command::SplitDown),
-            (KeyCode::Left,  KeyModifiers::empty(),  Command::FocusPrev),
-            (KeyCode::Right, KeyModifiers::empty(),  Command::FocusNext),
-            (KeyCode::Up,    KeyModifiers::empty(),  Command::FocusPrev),
-            (KeyCode::Down,  KeyModifiers::empty(),  Command::FocusNext),
+            (KeyCode::Left,  KeyModifiers::empty(),  Command::FocusLeft),
+            (KeyCode::Right, KeyModifiers::empty(),  Command::FocusRight),
+            (KeyCode::Up,    KeyModifiers::empty(),  Command::FocusUp),
+            (KeyCode::Down,  KeyModifiers::empty(),  Command::FocusDown),
             (KeyCode::Char('w'), KeyModifiers::empty(), Command::ClosePane),
             (KeyCode::Char('q'), KeyModifiers::empty(), Command::Quit),
         ];

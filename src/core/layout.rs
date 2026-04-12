@@ -151,6 +151,73 @@ impl Layout {
             self.active = id;
         }
     }
+
+    /// Focus the nearest pane in the given direction using spatial geometry.
+    /// `terminal_size` is (width, height) used to compute pane rects.
+    pub fn focus_direction(&mut self, direction: Direction, terminal_size: (u16, u16)) {
+        let (w, h) = terminal_size;
+        let rects = self.compute_rects(w, h);
+
+        let active_rect = match rects.get(&self.active) {
+            Some(r) => r,
+            None => return,
+        };
+
+        // Centre of the active pane.
+        let ax = active_rect.x as i32 + active_rect.width as i32 / 2;
+        let ay = active_rect.y as i32 + active_rect.height as i32 / 2;
+
+        let mut best: Option<(PaneId, i32)> = None;
+
+        for (&id, rect) in &rects {
+            if id == self.active {
+                continue;
+            }
+
+            let cx = rect.x as i32 + rect.width as i32 / 2;
+            let cy = rect.y as i32 + rect.height as i32 / 2;
+
+            // Check if the candidate is in the correct direction.
+            let in_direction = match direction {
+                Direction::Left  => cx < ax,
+                Direction::Right => cx > ax,
+                Direction::Up    => cy < ay,
+                Direction::Down  => cy > ay,
+            };
+            if !in_direction {
+                continue;
+            }
+
+            // Distance metric: Manhattan distance, weighted so that the primary
+            // axis (the direction of travel) matters more than the cross axis.
+            let dist = match direction {
+                Direction::Left | Direction::Right => {
+                    (cx - ax).abs() + (cy - ay).abs() * 2
+                }
+                Direction::Up | Direction::Down => {
+                    (cy - ay).abs() + (cx - ax).abs() * 2
+                }
+            };
+
+            if best.is_none() || dist < best.unwrap().1 {
+                best = Some((id, dist));
+            }
+        }
+
+        if let Some((id, _)) = best {
+            self.focus_history.push(self.active);
+            self.active = id;
+        }
+    }
+}
+
+/// Direction for spatial pane navigation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
