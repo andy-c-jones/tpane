@@ -1147,16 +1147,16 @@ mod tests {
         let rects_before = app.layout.compute_rects(w, h);
         let w_before = rects_before[&active].width;
 
-        // Fire a resize_right direct binding (Alt+Shift+Right)
+        // Active pane is the right pane; resize_left should grow it.
         let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
-        app.process_event(key_press(KeyCode::Right, alt_shift), &factory, &mut clip)
+        app.process_event(key_press(KeyCode::Left, alt_shift), &factory, &mut clip)
             .unwrap();
 
         let rects_after = app.layout.compute_rects(w, h);
         let w_after = rects_after[&active].width;
         assert!(
             w_after > w_before,
-            "active pane should grow after resize_right"
+            "active pane should grow after resize_left"
         );
     }
 
@@ -1174,19 +1174,41 @@ mod tests {
         let (w, h) = TERM_SIZE;
 
         let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
-        // Press once
-        app.process_event(key_press(KeyCode::Right, alt_shift), &factory, &mut clip)
+        // Active pane is the right pane; resize_left should continue growing on repeat.
+        app.process_event(key_press(KeyCode::Left, alt_shift), &factory, &mut clip)
             .unwrap();
         let w_after_press = app.layout.compute_rects(w, h)[&active].width;
 
         // Repeat (simulates holding the key)
-        app.process_event(key_repeat(KeyCode::Right, alt_shift), &factory, &mut clip)
+        app.process_event(key_repeat(KeyCode::Left, alt_shift), &factory, &mut clip)
             .unwrap();
         let w_after_repeat = app.layout.compute_rects(w, h)[&active].width;
         assert!(
             w_after_repeat > w_after_press,
             "repeat event should continue resizing"
         );
+    }
+
+    #[test]
+    fn vertical_resize_direction_matches_arrow() {
+        let (mut app, factory, mut clip) = default_app();
+        // Split down so active pane is below.
+        prefix_then(
+            &mut app,
+            &factory,
+            &mut clip,
+            KeyCode::Down,
+            KeyModifiers::CONTROL,
+        );
+        let active = app.active_pane();
+        let (w, h) = TERM_SIZE;
+        let h_before = app.layout.compute_rects(w, h)[&active].height;
+
+        let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
+        app.process_event(key_press(KeyCode::Up, alt_shift), &factory, &mut clip)
+            .unwrap();
+        let h_after = app.layout.compute_rects(w, h)[&active].height;
+        assert!(h_after > h_before, "lower pane should grow on resize_up");
     }
 
     #[test]

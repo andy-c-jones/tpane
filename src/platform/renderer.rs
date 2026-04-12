@@ -195,28 +195,10 @@ pub fn render(
 /// Compute the cheatsheet bar height for a given terminal width.
 /// Returns lines_of_bindings + 2 (for top/bottom border).
 pub fn cheatsheet_bar_height(w: u16, keymap: &KeyMap) -> u16 {
-    let all_bindings = cheatsheet_bindings(keymap);
+    let entries = cheatsheet_bindings(keymap);
     let inner_w = w.saturating_sub(2) as usize;
-    let title_prefix_len = " tpane │ ".chars().count();
-    let mut lines: u16 = 1;
-    let mut line_len = title_prefix_len;
-
-    for (i, (key, desc)) in all_bindings.iter().enumerate() {
-        let sep_w = if i > 0 && line_len > 0 { 3 } else { 0 };
-        let entry_w = key.chars().count() + 1 + desc.chars().count();
-        let needed = sep_w + entry_w;
-
-        if line_len > 0 && line_len + needed > inner_w {
-            lines += 1;
-            line_len = 0;
-        }
-        if line_len > 0 {
-            line_len += 3;
-        }
-        line_len += entry_w;
-    }
-
-    lines + 2 // +2 for border
+    let layout = compute_cheatsheet_grid_layout(&entries, inner_w);
+    (layout.rows as u16) + 2 // +2 for border
 }
 
 /// Draw a styled cheatsheet bar showing available keybindings.
@@ -237,40 +219,40 @@ fn render_cheatsheet(
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
 
-    let all_bindings = cheatsheet_bindings(keymap);
+    let entries = cheatsheet_bindings(keymap);
 
     // Available width inside the border (2 chars for left/right border).
     let inner_w = w.saturating_sub(2) as usize;
+    let layout = compute_cheatsheet_grid_layout(&entries, inner_w);
 
-    // Build lines that fit within inner_w, wrapping as needed.
+    // Build rows as an aligned grid.
     let mut lines: Vec<TuiLine> = Vec::new();
-    let mut spans: Vec<Span> = Vec::new();
-    let mut line_len: usize = " tpane │ ".chars().count();
-    spans.push(Span::styled(" tpane ", title_style));
-    spans.push(Span::styled("│ ", sep_style));
-
-    for (i, (key, desc)) in all_bindings.iter().enumerate() {
-        // Calculate width of this binding entry: " │ key desc" or "key desc" for first on line.
-        let sep_w = if i > 0 && line_len > 0 { 3 } else { 0 }; // " │ "
-        let entry_w = key.chars().count() + 1 + desc.chars().count(); // "key desc"
-        let needed = sep_w + entry_w;
-
-        if line_len > 0 && line_len + needed > inner_w {
-            // Wrap: finish current line and start a new one.
-            lines.push(TuiLine::from(std::mem::take(&mut spans)));
-            line_len = 0;
+    for row in 0..layout.rows {
+        let mut spans: Vec<Span> = Vec::new();
+        if row == 0 {
+            spans.push(Span::styled(" tpane ", title_style));
+            spans.push(Span::styled("│ ", sep_style));
         }
 
-        if line_len > 0 {
-            spans.push(Span::styled(" │ ", sep_style));
-            line_len += 3;
+        for col in 0..layout.cols {
+            if col > 0 {
+                spans.push(Span::styled(" │ ", sep_style));
+            }
+
+            let idx = row * layout.cols + col;
+            if let Some((key, desc)) = entries.get(idx) {
+                let entry_width = cheatsheet_entry_width_chars((key.as_str(), *desc));
+                let pad = layout.col_widths[col].saturating_sub(entry_width);
+
+                spans.push(Span::styled(key.clone(), key_style));
+                spans.push(Span::styled(" ", desc_style));
+                spans.push(Span::styled(*desc, desc_style));
+                if pad > 0 {
+                    spans.push(Span::styled(" ".repeat(pad), desc_style));
+                }
+            }
         }
-        spans.push(Span::styled(key.clone(), key_style));
-        spans.push(Span::styled(" ", desc_style));
-        spans.push(Span::styled(*desc, desc_style));
-        line_len += entry_w;
-    }
-    if !spans.is_empty() {
+
         lines.push(TuiLine::from(spans));
     }
 
@@ -320,6 +302,73 @@ fn cheatsheet_bindings(keymap: &KeyMap) -> Vec<(String, &'static str)> {
     entries.push(("Ctrl+Shift+V".to_string(), "Paste"));
     entries.push(("Right-Click".to_string(), "Copy"));
     entries
+}
+
+#[derive(Debug, Clone)]
+struct CheatsheetGridLayout {
+    cols: usize,
+    rows: usize,
+    col_widths: Vec<usize>,
+}
+
+const CHEATSHEET_COL_SEPARATOR_WIDTH: usize = 3; // " │ "
+const CHEATSHEET_MIN_COLUMN_WIDTH: usize = 18;
+
+fn compute_cheatsheet_grid_layout(
+    entries: &[(String, &'static str)],
+    inner_w: usize,
+) -> CheatsheetGridLayout {
+    let title_prefix_len = " tpane │ ".chars().count();
+    if entries.is_empty() {
+        return CheatsheetGridLayout {
+            cols: 1,
+            rows: 1,
+            col_widths: vec![title_prefix_len],
+        };
+    }
+
+    let max_cols = entries
+        .len()
+        .min((inner_w / CHEATSHEET_MIN_COLUMN_WIDTH).max(1));
+
+    for cols in (1..=max_cols).rev() {
+        let rows = entries.len().div_ceil(cols);
+        let mut col_widths = vec![0usize; cols];
+
+        for (idx, entry) in entries.iter().enumerate() {
+            let col = idx % cols;
+            col_widths[col] =
+                col_widths[col].max(cheatsheet_entry_width_chars((entry.0.as_str(), entry.1)));
+        }
+        if rows > 0 {
+            col_widths[0] = col_widths[0].max(title_prefix_len);
+        }
+
+        let total_width: usize = col_widths.iter().sum::<usize>()
+            + CHEATSHEET_COL_SEPARATOR_WIDTH * cols.saturating_sub(1);
+        if total_width <= inner_w {
+            return CheatsheetGridLayout {
+                cols,
+                rows,
+                col_widths,
+            };
+        }
+    }
+
+    let mut width = 0usize;
+    for entry in entries {
+        width = width.max(cheatsheet_entry_width_chars((entry.0.as_str(), entry.1)));
+    }
+    width = width.max(title_prefix_len).min(inner_w.max(1));
+    CheatsheetGridLayout {
+        cols: 1,
+        rows: entries.len(),
+        col_widths: vec![width],
+    }
+}
+
+fn cheatsheet_entry_width_chars(entry: (&str, &str)) -> usize {
+    entry.0.chars().count() + 1 + entry.1.chars().count()
 }
 
 fn push_prefix_binding(
@@ -718,6 +767,30 @@ mod tests {
         assert!(entries
             .iter()
             .any(|(k, d)| k == "Alt+h" && *d == "Resize Left"));
+    }
+
+    #[test]
+    fn cheatsheet_grid_uses_multiple_columns_when_wide() {
+        let entries = vec![
+            ("A".to_string(), "One"),
+            ("B".to_string(), "Two"),
+            ("C".to_string(), "Three"),
+            ("D".to_string(), "Four"),
+        ];
+        let layout = compute_cheatsheet_grid_layout(&entries, 80);
+        assert!(layout.cols > 1);
+        assert_eq!(layout.rows, entries.len().div_ceil(layout.cols));
+    }
+
+    #[test]
+    fn cheatsheet_grid_falls_back_to_single_column_when_narrow() {
+        let entries = vec![
+            ("Ctrl+Shift+Left".to_string(), "Resize Left"),
+            ("Ctrl+Shift+Right".to_string(), "Resize Right"),
+        ];
+        let layout = compute_cheatsheet_grid_layout(&entries, 20);
+        assert_eq!(layout.cols, 1);
+        assert_eq!(layout.rows, entries.len());
     }
 
     // ── key_event_to_bytes ────────────────────────────────────────────────────
