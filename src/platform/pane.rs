@@ -415,10 +415,14 @@ fn spawn_pty(
                 }
                 content_version.fetch_add(1, Ordering::Relaxed);
                 // Forward any terminal replies (e.g. DA1 response) back to the shell.
+                let mut replies = String::new();
                 while let Ok(reply) = reply_rx.try_recv() {
+                    replies.push_str(&reply);
+                }
+                if !replies.is_empty() {
                     let mut guard = pty_slot.lock();
                     if let Some(ref mut h) = *guard {
-                        let _ = h.writer.write_all(reply.as_bytes());
+                        let _ = h.writer.write_all(replies.as_bytes());
                         let _ = h.writer.flush();
                     }
                 }
