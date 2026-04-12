@@ -125,13 +125,12 @@ pub fn render(
             }
 
             if let Some(pane) = panes.get(pane_id) {
-                if term_has_visible_content(pane, inner.width, inner.height) {
-                    // Get selection range for this pane (if any).
-                    let sel_range = selection
-                        .filter(|s| s.pane_id == *pane_id && !s.is_empty())
-                        .map(|s| s.ordered());
+                // Get selection range for this pane (if any).
+                let sel_range = selection
+                    .filter(|s| s.pane_id == *pane_id && !s.is_empty())
+                    .map(|s| s.ordered());
 
-                    let content = term_to_text(pane, inner.width, inner.height, sel_range);
+                if let Some(content) = term_to_text(pane, inner.width, inner.height, sel_range) {
                     let para = Paragraph::new(content);
                     frame.render_widget(para, inner);
                 } else {
@@ -430,29 +429,6 @@ fn key_chord_to_display(chord: &KeyChord) -> String {
     parts.join("+")
 }
 
-/// Check if the terminal grid has any visible (non-space, non-null) content.
-/// Used to decide whether to show the loading throbber or real terminal content.
-fn term_has_visible_content(pane: &PaneState, width: u16, height: u16) -> bool {
-    let term = pane.term.lock();
-    let content: RenderableContent<'_> = term.renderable_content();
-    let rows = height as usize;
-    let cols = width as usize;
-
-    for row in 0..rows {
-        for col in 0..cols {
-            let point = Point::new(
-                Line(row as i32 - content.display_offset as i32),
-                Column(col),
-            );
-            let c = term.grid()[point].c;
-            if c != '\0' && c != ' ' {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Convert the alacritty Term grid into ratatui Text for display.
 /// If `sel_range` is Some, cells within the selection are rendered with inverted colors.
 fn term_to_text(
@@ -460,13 +436,14 @@ fn term_to_text(
     width: u16,
     height: u16,
     sel_range: Option<((u16, u16), (u16, u16))>,
-) -> Text<'static> {
+) -> Option<Text<'static>> {
     let term = pane.term.lock();
     let content: RenderableContent<'_> = term.renderable_content();
 
     let rows = height as usize;
     let cols = width as usize;
     let mut lines: Vec<TuiLine<'static>> = Vec::with_capacity(rows);
+    let mut has_visible_content = false;
 
     for row in 0..rows {
         let mut spans: Vec<Span<'static>> = Vec::new();
@@ -481,6 +458,9 @@ fn term_to_text(
             // Access cell via the grid directly
             let cell = term.grid()[point].clone();
             let (ch, mut style) = cell_to_span(&cell);
+            if ch != ' ' {
+                has_visible_content = true;
+            }
 
             // Apply selection highlight (inverted colors).
             if let Some(((sc, sr), (ec, er))) = sel_range {
@@ -507,8 +487,7 @@ fn term_to_text(
                 current_text.push(ch);
             } else {
                 if !current_text.is_empty() {
-                    spans.push(Span::styled(current_text.clone(), current_style));
-                    current_text.clear();
+                    spans.push(Span::styled(std::mem::take(&mut current_text), current_style));
                 }
                 current_text.push(ch);
                 current_style = style;
@@ -520,7 +499,11 @@ fn term_to_text(
         lines.push(TuiLine::from(spans));
     }
 
-    Text::from(lines)
+    if has_visible_content {
+        Some(Text::from(lines))
+    } else {
+        None
+    }
 }
 
 /// Convert an alacritty cell to a (char, ratatui Style) pair.
