@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 use std::sync::{mpsc, Arc};
 use std::thread;
+use std::sync::mpsc::SyncSender;
 
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
 use alacritty_terminal::sync::FairMutex;
@@ -36,6 +37,8 @@ pub struct TpaneEventListener {
     #[allow(dead_code)]
     pane_id: PaneId,
     title: Arc<Mutex<String>>,
+    /// Used to write terminal responses (e.g. DA1 replies) back to the PTY.
+    reply_tx: SyncSender<String>,
 }
 
 impl EventListener for TpaneEventListener {
@@ -46,6 +49,27 @@ impl EventListener for TpaneEventListener {
             }
             TermEvent::ResetTitle => {
                 self.title.lock().clear();
+            }
+            // The terminal emulator needs to send a response back to the shell
+            // (e.g. the DA1 Primary Device Attribute reply that fish waits for).
+            TermEvent::PtyWrite(s) => {
+                let _ = self.reply_tx.try_send(s);
+            }
+            // Color queries: call the provided formatter with a default black and
+            // write the result back so shells/programs don't stall waiting.
+            TermEvent::ColorRequest(_, formatter) => {
+                let default_color = alacritty_terminal::vte::ansi::Rgb { r: 0, g: 0, b: 0 };
+                let _ = self.reply_tx.try_send(formatter(default_color));
+            }
+            // Text-area size queries: respond with the current cell dimensions.
+            TermEvent::TextAreaSizeRequest(formatter) => {
+                let size = alacritty_terminal::event::WindowSize {
+                    num_lines: 0,
+                    num_cols: 0,
+                    cell_width: 0,
+                    cell_height: 0,
+                };
+                let _ = self.reply_tx.try_send(formatter(size));
             }
             _ => {}
         }
@@ -91,6 +115,10 @@ impl PaneState {
         rows: u16,
         event_tx: mpsc::Sender<PaneEvent>,
     ) -> Result<Self> {
+        // Bounded channel for responses the terminal emulator needs to send back
+        // to the shell (e.g. DA1 Primary Device Attribute replies).
+        let (reply_tx, reply_rx) = mpsc::sync_channel::<String>(64);
+
         // Create the alacritty Term immediately (cheap, no I/O).
         let term_config = TermConfig {
             kitty_keyboard: true,
@@ -101,6 +129,7 @@ impl PaneState {
             sender: event_tx.clone(),
             pane_id: id,
             title: title.clone(),
+            reply_tx,
         };
         let term_size = TermSize {
             cols: cols as usize,
@@ -122,7 +151,16 @@ impl PaneState {
             let ready_ref = ready.clone();
             thread::spawn(move || {
                 if let Err(e) = spawn_pty(
-                    id, cols, rows, event_tx, term_arc, pty_ref, buf_ref, resize_ref, ready_ref,
+                    id,
+                    cols,
+                    rows,
+                    event_tx,
+                    term_arc,
+                    pty_ref,
+                    buf_ref,
+                    resize_ref,
+                    ready_ref,
+                    reply_rx,
                 ) {
                     log::error!("Failed to spawn PTY for pane {:?}: {}", id, e);
                 }
@@ -259,6 +297,7 @@ fn spawn_pty(
     input_buffer: Arc<Mutex<Vec<u8>>>,
     pending_resize: Arc<Mutex<Option<(u16, u16)>>>,
     ready: Arc<std::sync::atomic::AtomicBool>,
+    reply_rx: mpsc::Receiver<String>,
 ) -> Result<()> {
     let pty_system = NativePtySystem::default();
     let size = PtySize {
@@ -328,6 +367,14 @@ fn spawn_pty(
                 {
                     let mut t = term.lock();
                     processor.advance(&mut *t, &buf[..n]);
+                }
+                // Forward any terminal replies (e.g. DA1 response) back to the shell.
+                while let Ok(reply) = reply_rx.try_recv() {
+                    let mut guard = pty_slot.lock();
+                    if let Some(ref mut h) = *guard {
+                        let _ = h.writer.write_all(reply.as_bytes());
+                        let _ = h.writer.flush();
+                    }
                 }
                 // Mark ready on first real output from the shell.
                 if !ready.load(std::sync::atomic::Ordering::Relaxed) {
