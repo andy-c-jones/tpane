@@ -32,7 +32,14 @@ pub enum Command {
 }
 
 impl Command {
-    /// Parse a command name string from Lua config into a Command.
+    /// Parse a command name string from Lua config into a [`Command`].
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// split_right -> Command::SplitRight
+    /// close       -> Command::ClosePane
+    /// ```
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "split_vertical" => Some(Self::SplitVertical),

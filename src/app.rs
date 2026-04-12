@@ -649,27 +649,39 @@ impl<B: PaneBackend> App<B> {
         None
     }
 
+    /// Return whether the event loop should keep running.
+    ///
+    /// This is primarily used by headless tests to assert quit/close behavior.
     #[allow(dead_code)]
     pub fn is_running(&self) -> bool {
         self.running
     }
 
+    /// Return the number of currently open panes.
     #[allow(dead_code)]
     pub fn pane_count(&self) -> usize {
         self.panes.len()
     }
 
+    /// Return the [`PaneId`] of the active (focused) pane.
     #[allow(dead_code)]
     pub fn active_pane(&self) -> PaneId {
         self.layout.active
     }
 
+    /// Return whether prefix mode is currently active.
+    ///
+    /// When this is `true`, the next non-global key is resolved via prefix
+    /// bindings rather than being forwarded to the active pane.
     #[allow(dead_code)]
     pub fn is_prefix_active(&self) -> bool {
         self.prefix_active
     }
 
-    /// Process a single event without a render step (useful for tests).
+    /// Process one [`AppEvent`] without triggering a render.
+    ///
+    /// This helper mirrors the event-handling paths used by [`Self::run`], but
+    /// skips renderer invocation to make unit tests deterministic and fast.
     #[allow(dead_code)]
     pub fn process_event<F: PaneFactory<B>>(
         &mut self,

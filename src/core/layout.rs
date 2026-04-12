@@ -210,6 +210,12 @@ impl Layout {
         }
     }
 
+    /// Return all leaf pane IDs in document order.
+    ///
+    /// # Notes
+    ///
+    /// This is useful for tests and diagnostics where callers need a stable
+    /// snapshot of the tree leaves without traversing [`Node`] directly.
     #[allow(dead_code)]
     pub fn leaf_ids(&self) -> Vec<PaneId> {
         collect_leaves(&self.root)

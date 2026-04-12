@@ -49,6 +49,10 @@ struct PaneRenderCache {
     content: Option<Vec<TuiLine<'static>>>,
 }
 
+/// Cache object reused across frames by the live renderer.
+///
+/// This stores pane content/title snapshots plus cheatsheet layout derivations
+/// so repeated renders avoid unnecessary recomputation when inputs are stable.
 #[derive(Default)]
 pub struct RenderCache {
     pane_content: HashMap<PaneId, PaneRenderCache>,

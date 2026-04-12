@@ -29,8 +29,16 @@ impl KeyChord {
     }
 
     /// Parse a human-readable chord string from Lua config.
+    ///
     /// Format: optional modifiers separated by `+`, then a key name.
-    /// E.g. "ctrl+shift+t", "ctrl+shift+w", "alt+f4"
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// ctrl+shift+t
+    /// alt+f4
+    /// left
+    /// ```
     pub fn parse(s: &str) -> Option<Self> {
         let parts: Vec<String> = s.to_lowercase().split('+').map(str::to_string).collect();
         if parts.is_empty() {
@@ -111,6 +119,9 @@ impl KeyMap {
     }
 
     /// Register a direct (non-prefix) binding.
+    ///
+    /// Direct bindings are checked before raw key forwarding, which allows
+    /// hold-to-repeat actions such as continuous pane resizing.
     pub fn bind_direct(&mut self, chord: KeyChord, command: Command) {
         self.direct_bindings.insert(chord, command);
     }

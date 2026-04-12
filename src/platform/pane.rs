@@ -21,6 +21,10 @@ use crate::core::layout::PaneId;
 
 // ── App-level event types sent from pane reader threads ──────────────────────
 
+/// Pane lifecycle/data events produced by PTY reader threads.
+///
+/// These events are consumed by [`crate::platform::live::LiveEventSource`] and
+/// transformed into [`crate::traits::AppEvent`] values for the app loop.
 #[derive(Debug)]
 pub enum PaneEvent {
     /// Terminal output arrived for this pane.

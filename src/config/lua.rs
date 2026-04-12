@@ -9,7 +9,13 @@ use crate::config::defaults::DEFAULT_CONFIG;
 use crate::core::commands::Command;
 use crate::core::keymap::{KeyChord, KeyMap};
 
-/// Resolved configuration after loading main.lua.
+/// Resolved configuration after loading `main.lua`.
+///
+/// # Fields
+///
+/// - [`Self::keymap`]: resolved prefix/direct key bindings
+/// - [`Self::startup_commands`]: startup command sequence captured from Lua
+/// - [`Self::show_cheatsheet`]: whether prefix-mode cheatsheet is shown
 pub struct LuaConfig {
     pub keymap: KeyMap,
     /// Commands to run at startup (from tpane.on_startup), each paired with an optional split ratio.
@@ -22,6 +28,9 @@ pub struct LuaConfig {
 
 impl LuaConfig {
     /// Return the platform-appropriate config directory path.
+    ///
+    /// This resolves to `$XDG_CONFIG_HOME/tpane` (or `~/.config/tpane`) on
+    /// Unix-like systems and `%APPDATA%\\tpane` on Windows.
     pub fn config_dir() -> PathBuf {
         // Linux/macOS: ~/.config/tpane
         // Windows:     %APPDATA%\tpane
@@ -41,6 +50,8 @@ impl LuaConfig {
     }
 
     /// Ensure the config directory and default file exist.
+    ///
+    /// If the file is missing, this writes [`DEFAULT_CONFIG`].
     pub fn init_if_missing() -> Result<()> {
         let dir = Self::config_dir();
         if !dir.exists() {
@@ -55,14 +66,22 @@ impl LuaConfig {
         Ok(())
     }
 
-    /// Load and evaluate main.lua, returning the resolved config.
+    /// Load and evaluate `main.lua`, returning the resolved config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when file I/O fails or Lua evaluation reports a syntax
+    /// or runtime error.
     pub fn load() -> Result<Self> {
         Self::init_if_missing()?;
         let source = std::fs::read_to_string(Self::config_file()).context("reading main.lua")?;
         Self::load_from_source(&source)
     }
 
-    /// Load config from a raw Lua source string (used in tests and for future embedding).
+    /// Load config from a raw Lua source string.
+    ///
+    /// This is used by tests and can also be used by future embedding
+    /// integrations that provide in-memory config content.
     pub fn load_from_source(source: &str) -> Result<Self> {
         // mlua 0.11: LuaError's inner source field is Arc<dyn Error> (no Send+Sync), so it no
         // longer satisfies anyhow's From<E: Send+Sync> bound.  Convert explicitly via format.
