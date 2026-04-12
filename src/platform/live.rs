@@ -12,7 +12,7 @@ use crossterm::event::{self, Event, KeyEventKind, MouseButton, MouseEventKind};
 use crate::core::keymap::KeyMap;
 use crate::core::layout::{Layout, PaneId};
 use crate::platform::pane::{PaneEvent, PaneState};
-use crate::platform::renderer::{self, Tui};
+use crate::platform::renderer::{self, RenderCache, Tui};
 use crate::traits::{AppEvent, EventSource, PaneBackend, PaneFactory, Renderer};
 
 // ── LiveEventSource ──────────────────────────────────────────────────────────
@@ -168,11 +168,15 @@ impl PaneFactory<PaneState> for LivePaneFactory {
 /// Wraps the real ratatui terminal for rendering.
 pub struct LiveRenderer<'a> {
     tui: &'a mut Tui,
+    cache: RenderCache,
 }
 
 impl<'a> LiveRenderer<'a> {
     pub fn new(tui: &'a mut Tui) -> Self {
-        Self { tui }
+        Self {
+            tui,
+            cache: RenderCache::default(),
+        }
     }
 }
 
@@ -188,6 +192,7 @@ impl<'a> Renderer<PaneState> for LiveRenderer<'a> {
     ) -> Result<()> {
         renderer::render(
             self.tui,
+            &mut self.cache,
             layout,
             panes,
             keymap,

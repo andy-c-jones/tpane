@@ -1,4 +1,5 @@
 use std::io::{self, Stdout};
+use std::collections::HashMap;
 use std::time::Instant;
 
 use alacritty_terminal::index::{Column, Line, Point};
@@ -26,6 +27,26 @@ const BRAILLE_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '�
 
 /// Start time used to derive animation frame from wall clock.
 static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct PaneRenderKey {
+    content_version: u64,
+    width: u16,
+    height: u16,
+    sel_range: Option<((u16, u16), (u16, u16))>,
+    ready: bool,
+}
+
+#[derive(Debug, Clone)]
+struct PaneRenderCache {
+    key: PaneRenderKey,
+    content: Option<Text<'static>>,
+}
+
+#[derive(Default)]
+pub struct RenderCache {
+    pane_content: HashMap<PaneId, PaneRenderCache>,
+}
 
 /// Enter raw mode and alternate screen, return a ratatui Terminal.
 pub fn init_terminal() -> Result<Tui> {
@@ -55,6 +76,7 @@ pub fn restore_terminal(tui: &mut Tui) -> Result<()> {
 /// Render the full tpane UI: one bordered block per pane, content from the Term grid.
 pub fn render(
     tui: &mut Tui,
+    cache: &mut RenderCache,
     layout: &Layout,
     panes: &std::collections::HashMap<PaneId, PaneState>,
     keymap: &KeyMap,
@@ -73,6 +95,7 @@ pub fn render(
         };
         let pane_area_h = h.saturating_sub(cheatsheet_height);
         let (rects, dividers) = layout.compute_geometry(w, pane_area_h);
+        cache.pane_content.retain(|id, _| rects.contains_key(id));
 
         for (pane_id, rect) in &rects {
             // Skip panes with no visible area (can happen during resize).
@@ -129,8 +152,29 @@ pub fn render(
                 let sel_range = selection
                     .filter(|s| s.pane_id == *pane_id && !s.is_empty())
                     .map(|s| s.ordered());
+                let key = PaneRenderKey {
+                    content_version: pane.content_version(),
+                    width: inner.width,
+                    height: inner.height,
+                    sel_range,
+                    ready: pane.is_ready(),
+                };
+                let content = match cache.pane_content.get(pane_id) {
+                    Some(cached) if cached.key == key => cached.content.clone(),
+                    _ => {
+                        let built = term_to_text(pane, inner.width, inner.height, sel_range);
+                        cache.pane_content.insert(
+                            *pane_id,
+                            PaneRenderCache {
+                                key,
+                                content: built.clone(),
+                            },
+                        );
+                        built
+                    }
+                };
 
-                if let Some(content) = term_to_text(pane, inner.width, inner.height, sel_range) {
+                if let Some(content) = content {
                     let para = Paragraph::new(content);
                     frame.render_widget(para, inner);
                 } else {

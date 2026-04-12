@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::sync::{Arc, mpsc};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::thread;
 use std::sync::mpsc::SyncSender;
 
@@ -114,6 +114,8 @@ pub struct PaneState {
     title: Arc<Mutex<String>>,
     /// Shared pane size for the event listener (kept in sync with cols/rows).
     packed_size: Arc<AtomicU32>,
+    /// Monotonic counter incremented when terminal content might have changed.
+    content_version: Arc<AtomicU64>,
 }
 
 impl PaneState {
@@ -131,6 +133,7 @@ impl PaneState {
 
         // Shared size for accurate TextAreaSizeRequest replies; updated on resize.
         let packed_size = Arc::new(AtomicU32::new(pack_size(cols, rows)));
+        let content_version = Arc::new(AtomicU64::new(0));
 
         // Create the alacritty Term immediately (cheap, no I/O).
         let term_config = TermConfig {
@@ -163,6 +166,7 @@ impl PaneState {
             let buf_ref = input_buffer.clone();
             let resize_ref = pending_resize.clone();
             let ready_ref = ready.clone();
+            let content_version_ref = content_version.clone();
             thread::spawn(move || {
                 if let Err(e) = spawn_pty(
                     id,
@@ -174,6 +178,7 @@ impl PaneState {
                     buf_ref,
                     resize_ref,
                     ready_ref,
+                    content_version_ref,
                     reply_rx,
                 ) {
                     log::error!("Failed to spawn PTY for pane {:?}: {}", id, e);
@@ -192,6 +197,7 @@ impl PaneState {
             ready,
             title,
             packed_size,
+            content_version,
         })
     }
 
@@ -221,6 +227,7 @@ impl PaneState {
             rows: rows as usize,
         };
         self.term.lock().resize(term_size);
+        self.content_version.fetch_add(1, Ordering::Relaxed);
 
         let mut pty_guard = self.pty.lock();
         if let Some(ref mut handles) = *pty_guard {
@@ -246,6 +253,11 @@ impl PaneState {
     /// Returns an empty string if no title has been set.
     pub fn title(&self) -> String {
         self.title.lock().clone()
+    }
+
+    /// Monotonic counter of terminal content mutations.
+    pub fn content_version(&self) -> u64 {
+        self.content_version.load(Ordering::Relaxed)
     }
 
     /// Extract text from the terminal grid between two pane-grid-local positions.
@@ -317,6 +329,7 @@ fn spawn_pty(
     input_buffer: Arc<Mutex<Vec<u8>>>,
     pending_resize: Arc<Mutex<Option<(u16, u16)>>>,
     ready: Arc<std::sync::atomic::AtomicBool>,
+    content_version: Arc<AtomicU64>,
     reply_rx: mpsc::Receiver<String>,
 ) -> Result<()> {
     let pty_system = NativePtySystem::default();
@@ -387,6 +400,7 @@ fn spawn_pty(
                     let mut t = term.lock();
                     processor.advance(&mut *t, &buf[..n]);
                 }
+                content_version.fetch_add(1, Ordering::Relaxed);
                 // Forward any terminal replies (e.g. DA1 response) back to the shell.
                 while let Ok(reply) = reply_rx.try_recv() {
                     let mut guard = pty_slot.lock();
