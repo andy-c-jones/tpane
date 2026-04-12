@@ -147,7 +147,8 @@ impl<B: PaneBackend> App<B> {
                 Ok(true)
             }
             KeyCode::Char('v') | KeyCode::Char('V') => {
-                self.paste_clipboard(clipboard)?;
+                let target = self.layout.active;
+                self.paste_clipboard_to(target, clipboard)?;
                 Ok(true)
             }
             _ => Ok(false),
@@ -170,10 +171,10 @@ impl<B: PaneBackend> App<B> {
         self.selection = None;
     }
 
-    fn paste_clipboard(&mut self, clipboard: &mut dyn Clipboard) -> Result<()> {
+    fn paste_clipboard_to(&mut self, pane_id: PaneId, clipboard: &mut dyn Clipboard) -> Result<()> {
         if let Ok(text) = clipboard.get_text() {
             if !text.is_empty() {
-                if let Some(pane) = self.panes.get_mut(&self.layout.active) {
+                if let Some(pane) = self.panes.get_mut(&pane_id) {
                     // Bracketed paste mode: wrap content so shells don't execute line-by-line.
                     let mut bytes = Vec::new();
                     bytes.extend_from_slice(b"\x1b[200~");
@@ -336,7 +337,16 @@ impl<B: PaneBackend> App<B> {
                 self.dragging = false;
             }
             MouseEventKind::Down(MouseButton::Right) => {
-                self.copy_selection(clipboard);
+                if self.selection.is_some() {
+                    // Selection exists: copy it to clipboard.
+                    self.copy_selection(clipboard);
+                } else {
+                    // No selection: paste clipboard into the clicked pane.
+                    let target = Self::find_pane_at(&rects, mouse.column, mouse.row)
+                        .map(|(id, _)| id)
+                        .unwrap_or(self.layout.active);
+                    let _ = self.paste_clipboard_to(target, clipboard);
+                }
             }
             _ => {}
         }

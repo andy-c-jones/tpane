@@ -570,4 +570,65 @@ mod tests {
         app.process_event(mouse_up(0, 0), &factory, &mut clip).unwrap();
         assert!(app.selection.is_none());
     }
+
+    // ── right-click paste ────────────────────────────────────────────────────
+
+    #[test]
+    fn right_click_without_selection_pastes() {
+        let (mut app, factory, mut clip) = default_app();
+        clip.content = "pasted text".to_string();
+        assert!(app.selection.is_none());
+
+        app.process_event(mouse_right_click(5, 5), &factory, &mut clip).unwrap();
+
+        let active = app.active_pane();
+        let pane = &app.panes[&active];
+        assert_eq!(pane.input_log.len(), 1);
+        let bytes = &pane.input_log[0];
+        assert!(bytes.starts_with(b"\x1b[200~"));
+        assert!(bytes.ends_with(b"\x1b[201~"));
+        assert!(bytes.windows(11).any(|w| w == b"pasted text"));
+    }
+
+    #[test]
+    fn right_click_pastes_into_inactive_pane() {
+        let (mut app, factory, mut clip) = default_app();
+        let first = app.active_pane();
+        // Split right → active is now the right pane
+        prefix_then(&mut app, &factory, &mut clip, KeyCode::Right, KeyModifiers::CONTROL);
+        let second = app.active_pane();
+        assert_ne!(first, second);
+
+        clip.content = "into first".to_string();
+        // Right-click in the left (inactive) pane area
+        app.process_event(mouse_right_click(1, 1), &factory, &mut clip).unwrap();
+
+        // The paste should go to the first pane (left), not the active one
+        let first_pane = &app.panes[&first];
+        assert_eq!(first_pane.input_log.len(), 1);
+        assert!(first_pane.input_log[0].windows(10).any(|w| w == b"into first"));
+
+        // Second pane should have no input
+        assert!(app.panes[&second].input_log.is_empty());
+    }
+
+    #[test]
+    fn right_click_with_selection_copies_not_pastes() {
+        let (mut app, factory, mut clip) = default_app();
+        clip.content = "should not paste".to_string();
+
+        // Create a selection via drag
+        app.process_event(mouse_click(2, 2), &factory, &mut clip).unwrap();
+        app.process_event(mouse_drag(10, 2), &factory, &mut clip).unwrap();
+        app.process_event(mouse_up(10, 2), &factory, &mut clip).unwrap();
+        assert!(app.selection.is_some());
+
+        // Right-click should copy (clearing selection), NOT paste
+        app.process_event(mouse_right_click(5, 5), &factory, &mut clip).unwrap();
+        assert!(app.selection.is_none());
+
+        // No input should have been written to the pane (headless has no grid content to copy)
+        let active = app.active_pane();
+        assert!(app.panes[&active].input_log.is_empty());
+    }
 }
