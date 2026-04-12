@@ -64,29 +64,33 @@ mod tests {
     #[test]
     fn all_named_commands_parse() {
         let cases = [
-            ("split_vertical",   Command::SplitVertical),
+            ("split_vertical", Command::SplitVertical),
             ("split_horizontal", Command::SplitHorizontal),
-            ("split",            Command::SplitVertical),
-            ("split_left",       Command::SplitLeft),
-            ("split_right",      Command::SplitRight),
-            ("split_up",         Command::SplitUp),
-            ("split_down",       Command::SplitDown),
-            ("close",            Command::ClosePane),
-            ("close_pane",       Command::ClosePane),
-            ("focus_next",       Command::FocusNext),
-            ("focus_prev",       Command::FocusPrev),
-            ("focus_left",       Command::FocusLeft),
-            ("focus_right",      Command::FocusRight),
-            ("focus_up",         Command::FocusUp),
-            ("focus_down",       Command::FocusDown),
-            ("resize_left",      Command::ResizeLeft),
-            ("resize_right",     Command::ResizeRight),
-            ("resize_up",        Command::ResizeUp),
-            ("resize_down",      Command::ResizeDown),
-            ("quit",             Command::Quit),
+            ("split", Command::SplitVertical),
+            ("split_left", Command::SplitLeft),
+            ("split_right", Command::SplitRight),
+            ("split_up", Command::SplitUp),
+            ("split_down", Command::SplitDown),
+            ("close", Command::ClosePane),
+            ("close_pane", Command::ClosePane),
+            ("focus_next", Command::FocusNext),
+            ("focus_prev", Command::FocusPrev),
+            ("focus_left", Command::FocusLeft),
+            ("focus_right", Command::FocusRight),
+            ("focus_up", Command::FocusUp),
+            ("focus_down", Command::FocusDown),
+            ("resize_left", Command::ResizeLeft),
+            ("resize_right", Command::ResizeRight),
+            ("resize_up", Command::ResizeUp),
+            ("resize_down", Command::ResizeDown),
+            ("quit", Command::Quit),
         ];
         for (name, expected) in cases {
-            assert_eq!(Command::from_name(name), Some(expected), "failed for '{name}'");
+            assert_eq!(
+                Command::from_name(name),
+                Some(expected),
+                "failed for '{name}'"
+            );
         }
     }
 

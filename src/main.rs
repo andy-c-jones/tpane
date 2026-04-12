@@ -4,9 +4,9 @@ mod core;
 #[cfg(test)]
 mod headless;
 mod platform;
-mod traits;
 #[cfg(test)]
 mod tests_headless;
+mod traits;
 
 use anyhow::Result;
 
