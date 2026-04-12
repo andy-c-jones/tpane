@@ -1,11 +1,11 @@
 use std::io::{self, Stdout};
 use std::time::Instant;
 
+use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::RenderableContent;
-use alacritty_terminal::index::{Column, Line, Point};
 use anyhow::Result;
-use crossterm::event::{KeyEventKind};
+use crossterm::event::KeyEventKind;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Rect as TuiRect};
 use ratatui::style::{Color, Modifier, Style};
@@ -13,6 +13,8 @@ use ratatui::text::{Line as TuiLine, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
 
+use crate::core::commands::Command;
+use crate::core::keymap::{KeyChord, KeyMap};
 use crate::core::layout::{Layout, PaneId};
 use crate::core::selection::Selection;
 use crate::platform::pane::PaneState;
@@ -20,9 +22,7 @@ use crate::platform::pane::PaneState;
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
 /// Braille spinner frames — a smooth rotating dot pattern.
-const BRAILLE_SPINNER: &[char] = &[
-    '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏',
-];
+const BRAILLE_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// Start time used to derive animation frame from wall clock.
 static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -57,6 +57,7 @@ pub fn render(
     tui: &mut Tui,
     layout: &Layout,
     panes: &std::collections::HashMap<PaneId, PaneState>,
+    keymap: &KeyMap,
     terminal_size: (u16, u16),
     prefix_active: bool,
     selection: Option<&Selection>,
@@ -66,7 +67,7 @@ pub fn render(
 
         // Reserve space for cheatsheet bar when prefix is active.
         let cheatsheet_height: u16 = if prefix_active {
-            cheatsheet_bar_height(w)
+            cheatsheet_bar_height(w, keymap)
         } else {
             0
         };
@@ -94,7 +95,8 @@ pub fn render(
             };
 
             // Use the terminal's OSC title if set, otherwise "tpane".
-            let pane_title = panes.get(pane_id)
+            let pane_title = panes
+                .get(pane_id)
                 .map(|p| p.title())
                 .filter(|t| !t.is_empty());
             let title = if is_active {
@@ -139,14 +141,11 @@ pub fn render(
                     let frame_idx = (elapsed_ms / 80) % BRAILLE_SPINNER.len();
                     let spinner = BRAILLE_SPINNER[frame_idx];
 
-                    let loading = TuiLine::from(vec![
-                        Span::styled(
-                            format!(" {} Loading shell…", spinner),
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                    ]);
-                    let para = Paragraph::new(Text::from(loading))
-                        .alignment(Alignment::Center);
+                    let loading = TuiLine::from(vec![Span::styled(
+                        format!(" {} Loading shell…", spinner),
+                        Style::default().fg(Color::DarkGray),
+                    )]);
+                    let para = Paragraph::new(Text::from(loading)).alignment(Alignment::Center);
                     // Center vertically by rendering into a sub-rect.
                     let center_y = inner.y + inner.height / 2;
                     let center_rect = TuiRect {
@@ -162,7 +161,7 @@ pub fn render(
 
         // Render cheatsheet bar at the bottom.
         if prefix_active && cheatsheet_height > 0 && h > cheatsheet_height {
-            render_cheatsheet(frame, w, h, cheatsheet_height);
+            render_cheatsheet(frame, keymap, w, h, cheatsheet_height);
         }
 
         // Render subtle grab-handle dots on each divider so users know they're draggable.
@@ -195,20 +194,8 @@ pub fn render(
 
 /// Compute the cheatsheet bar height for a given terminal width.
 /// Returns lines_of_bindings + 2 (for top/bottom border).
-pub fn cheatsheet_bar_height(w: u16) -> u16 {
-    let all_bindings: &[(&str, &str)] = &[
-        ("Ctrl+←", "Split Left"),
-        ("Ctrl+→", "Split Right"),
-        ("Ctrl+↑", "Split Up"),
-        ("Ctrl+↓", "Split Down"),
-        ("←↑↓→", "Focus"),
-        ("w", "Close Pane"),
-        ("q", "Quit"),
-        ("Ctrl+Shift+C", "Copy"),
-        ("Ctrl+Shift+V", "Paste"),
-        ("Right-Click", "Copy"),
-    ];
-
+pub fn cheatsheet_bar_height(w: u16, keymap: &KeyMap) -> u16 {
+    let all_bindings = cheatsheet_bindings(keymap);
     let inner_w = w.saturating_sub(2) as usize;
     let title_prefix_len = " tpane │ ".chars().count();
     let mut lines: u16 = 1;
@@ -236,27 +223,21 @@ pub fn cheatsheet_bar_height(w: u16) -> u16 {
 /// Dynamically wraps bindings across multiple lines to fit the terminal width.
 fn render_cheatsheet(
     frame: &mut ratatui::Frame,
+    keymap: &KeyMap,
     w: u16,
     h: u16,
     _bar_height: u16,
 ) {
-    let key_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let key_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
     let sep_style = Style::default().fg(Color::DarkGray);
     let desc_style = Style::default().fg(Color::White);
-    let title_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let title_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
 
-    let all_bindings: &[(&str, &str)] = &[
-        ("Ctrl+←", "Split Left"),
-        ("Ctrl+→", "Split Right"),
-        ("Ctrl+↑", "Split Up"),
-        ("Ctrl+↓", "Split Down"),
-        ("←↑↓→", "Focus"),
-        ("w", "Close Pane"),
-        ("q", "Quit"),
-        ("Ctrl+Shift+C", "Copy"),
-        ("Ctrl+Shift+V", "Paste"),
-        ("Right-Click", "Copy"),
-    ];
+    let all_bindings = cheatsheet_bindings(keymap);
 
     // Available width inside the border (2 chars for left/right border).
     let inner_w = w.saturating_sub(2) as usize;
@@ -284,7 +265,7 @@ fn render_cheatsheet(
             spans.push(Span::styled(" │ ", sep_style));
             line_len += 3;
         }
-        spans.push(Span::styled(*key, key_style));
+        spans.push(Span::styled(key.clone(), key_style));
         spans.push(Span::styled(" ", desc_style));
         spans.push(Span::styled(*desc, desc_style));
         line_len += entry_w;
@@ -316,6 +297,96 @@ fn render_cheatsheet(
     frame.render_widget(para, bar_rect);
 }
 
+fn cheatsheet_bindings(keymap: &KeyMap) -> Vec<(String, &'static str)> {
+    let mut entries: Vec<(String, &'static str)> = Vec::new();
+
+    push_prefix_binding(&mut entries, keymap, Command::SplitLeft, "Split Left");
+    push_prefix_binding(&mut entries, keymap, Command::SplitRight, "Split Right");
+    push_prefix_binding(&mut entries, keymap, Command::SplitUp, "Split Up");
+    push_prefix_binding(&mut entries, keymap, Command::SplitDown, "Split Down");
+    push_prefix_binding(&mut entries, keymap, Command::FocusLeft, "Focus Left");
+    push_prefix_binding(&mut entries, keymap, Command::FocusRight, "Focus Right");
+    push_prefix_binding(&mut entries, keymap, Command::FocusUp, "Focus Up");
+    push_prefix_binding(&mut entries, keymap, Command::FocusDown, "Focus Down");
+    push_prefix_binding(&mut entries, keymap, Command::ClosePane, "Close Pane");
+    push_prefix_binding(&mut entries, keymap, Command::Quit, "Quit");
+
+    push_direct_binding(&mut entries, keymap, Command::ResizeLeft, "Resize Left");
+    push_direct_binding(&mut entries, keymap, Command::ResizeRight, "Resize Right");
+    push_direct_binding(&mut entries, keymap, Command::ResizeUp, "Resize Up");
+    push_direct_binding(&mut entries, keymap, Command::ResizeDown, "Resize Down");
+
+    entries.push(("Ctrl+Shift+C".to_string(), "Copy"));
+    entries.push(("Ctrl+Shift+V".to_string(), "Paste"));
+    entries.push(("Right-Click".to_string(), "Copy"));
+    entries
+}
+
+fn push_prefix_binding(
+    entries: &mut Vec<(String, &'static str)>,
+    keymap: &KeyMap,
+    command: Command,
+    desc: &'static str,
+) {
+    if let Some(key) = display_key_for(keymap.prefix_chords_for_command(command)) {
+        entries.push((key, desc));
+    }
+}
+
+fn push_direct_binding(
+    entries: &mut Vec<(String, &'static str)>,
+    keymap: &KeyMap,
+    command: Command,
+    desc: &'static str,
+) {
+    if let Some(key) = display_key_for(keymap.direct_chords_for_command(command)) {
+        entries.push((key, desc));
+    }
+}
+
+fn display_key_for(chords: Vec<KeyChord>) -> Option<String> {
+    let mut keys: Vec<String> = chords.iter().map(key_chord_to_display).collect();
+    keys.sort();
+    keys.into_iter().next()
+}
+
+fn key_chord_to_display(chord: &KeyChord) -> String {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    let mut parts: Vec<String> = Vec::new();
+    if chord.modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push("Ctrl".to_string());
+    }
+    if chord.modifiers.contains(KeyModifiers::ALT) {
+        parts.push("Alt".to_string());
+    }
+    if chord.modifiers.contains(KeyModifiers::SHIFT) {
+        parts.push("Shift".to_string());
+    }
+
+    let key = match chord.code {
+        KeyCode::Left => "←".to_string(),
+        KeyCode::Right => "→".to_string(),
+        KeyCode::Up => "↑".to_string(),
+        KeyCode::Down => "↓".to_string(),
+        KeyCode::Enter => "Enter".to_string(),
+        KeyCode::Tab => "Tab".to_string(),
+        KeyCode::Backspace => "Backspace".to_string(),
+        KeyCode::Delete => "Delete".to_string(),
+        KeyCode::Esc => "Esc".to_string(),
+        KeyCode::Home => "Home".to_string(),
+        KeyCode::End => "End".to_string(),
+        KeyCode::PageUp => "PageUp".to_string(),
+        KeyCode::PageDown => "PageDown".to_string(),
+        KeyCode::Char(' ') => "Space".to_string(),
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::F(n) => format!("F{n}"),
+        _ => format!("{:?}", chord.code),
+    };
+    parts.push(key);
+    parts.join("+")
+}
+
 /// Check if the terminal grid has any visible (non-space, non-null) content.
 /// Used to decide whether to show the loading throbber or real terminal content.
 fn term_has_visible_content(pane: &PaneState, width: u16, height: u16) -> bool {
@@ -326,7 +397,10 @@ fn term_has_visible_content(pane: &PaneState, width: u16, height: u16) -> bool {
 
     for row in 0..rows {
         for col in 0..cols {
-            let point = Point::new(Line(row as i32 - content.display_offset as i32), Column(col));
+            let point = Point::new(
+                Line(row as i32 - content.display_offset as i32),
+                Column(col),
+            );
             let c = term.grid()[point].c;
             if c != '\0' && c != ' ' {
                 return true;
@@ -357,7 +431,10 @@ fn term_to_text(
         let mut current_style = Style::default();
 
         for col in 0..cols {
-            let point = Point::new(Line(row as i32 - content.display_offset as i32), Column(col));
+            let point = Point::new(
+                Line(row as i32 - content.display_offset as i32),
+                Column(col),
+            );
             // Access cell via the grid directly
             let cell = term.grid()[point].clone();
             let (ch, mut style) = cell_to_span(&cell);
@@ -417,13 +494,22 @@ fn cell_to_span(cell: &Cell) -> (char, Style) {
     if let Some(c) = bg {
         style = style.bg(c);
     }
-    if cell.flags.contains(alacritty_terminal::term::cell::Flags::BOLD) {
+    if cell
+        .flags
+        .contains(alacritty_terminal::term::cell::Flags::BOLD)
+    {
         style = style.add_modifier(Modifier::BOLD);
     }
-    if cell.flags.contains(alacritty_terminal::term::cell::Flags::ITALIC) {
+    if cell
+        .flags
+        .contains(alacritty_terminal::term::cell::Flags::ITALIC)
+    {
         style = style.add_modifier(Modifier::ITALIC);
     }
-    if cell.flags.contains(alacritty_terminal::term::cell::Flags::UNDERLINE) {
+    if cell
+        .flags
+        .contains(alacritty_terminal::term::cell::Flags::UNDERLINE)
+    {
         style = style.add_modifier(Modifier::UNDERLINED);
     }
     (ch, style)
@@ -432,22 +518,22 @@ fn cell_to_span(cell: &Cell) -> (char, Style) {
 fn ansi_color_to_ratatui(color: alacritty_terminal::vte::ansi::Color) -> Option<Color> {
     use alacritty_terminal::vte::ansi::{Color as AColor, NamedColor};
     match color {
-        AColor::Named(NamedColor::Black)   => Some(Color::Black),
-        AColor::Named(NamedColor::Red)     => Some(Color::Red),
-        AColor::Named(NamedColor::Green)   => Some(Color::Green),
-        AColor::Named(NamedColor::Yellow)  => Some(Color::Yellow),
-        AColor::Named(NamedColor::Blue)    => Some(Color::Blue),
+        AColor::Named(NamedColor::Black) => Some(Color::Black),
+        AColor::Named(NamedColor::Red) => Some(Color::Red),
+        AColor::Named(NamedColor::Green) => Some(Color::Green),
+        AColor::Named(NamedColor::Yellow) => Some(Color::Yellow),
+        AColor::Named(NamedColor::Blue) => Some(Color::Blue),
         AColor::Named(NamedColor::Magenta) => Some(Color::Magenta),
-        AColor::Named(NamedColor::Cyan)    => Some(Color::Cyan),
-        AColor::Named(NamedColor::White)   => Some(Color::White),
-        AColor::Named(NamedColor::BrightBlack)   => Some(Color::DarkGray),
-        AColor::Named(NamedColor::BrightRed)     => Some(Color::LightRed),
-        AColor::Named(NamedColor::BrightGreen)   => Some(Color::LightGreen),
-        AColor::Named(NamedColor::BrightYellow)  => Some(Color::LightYellow),
-        AColor::Named(NamedColor::BrightBlue)    => Some(Color::LightBlue),
+        AColor::Named(NamedColor::Cyan) => Some(Color::Cyan),
+        AColor::Named(NamedColor::White) => Some(Color::White),
+        AColor::Named(NamedColor::BrightBlack) => Some(Color::DarkGray),
+        AColor::Named(NamedColor::BrightRed) => Some(Color::LightRed),
+        AColor::Named(NamedColor::BrightGreen) => Some(Color::LightGreen),
+        AColor::Named(NamedColor::BrightYellow) => Some(Color::LightYellow),
+        AColor::Named(NamedColor::BrightBlue) => Some(Color::LightBlue),
         AColor::Named(NamedColor::BrightMagenta) => Some(Color::LightMagenta),
-        AColor::Named(NamedColor::BrightCyan)    => Some(Color::LightCyan),
-        AColor::Named(NamedColor::BrightWhite)   => Some(Color::White),
+        AColor::Named(NamedColor::BrightCyan) => Some(Color::LightCyan),
+        AColor::Named(NamedColor::BrightWhite) => Some(Color::White),
         AColor::Spec(rgb) => Some(Color::Rgb(rgb.r, rgb.g, rgb.b)),
         AColor::Indexed(i) => Some(Color::Indexed(i)),
         _ => None,
@@ -487,19 +573,21 @@ pub fn key_event_to_bytes(event: &crossterm::event::KeyEvent) -> Option<Vec<u8>>
         }
         KeyCode::BackTab => vec![0x1b, b'[', b'Z'], // Shift+Tab
         KeyCode::Esc => vec![0x1b],
-        KeyCode::Up    => csi_with_modifier(b'A', mods),
-        KeyCode::Down  => csi_with_modifier(b'B', mods),
+        KeyCode::Up => csi_with_modifier(b'A', mods),
+        KeyCode::Down => csi_with_modifier(b'B', mods),
         KeyCode::Right => csi_with_modifier(b'C', mods),
-        KeyCode::Left  => csi_with_modifier(b'D', mods),
-        KeyCode::Home  => csi_with_modifier(b'H', mods),
-        KeyCode::End   => csi_with_modifier(b'F', mods),
+        KeyCode::Left => csi_with_modifier(b'D', mods),
+        KeyCode::Home => csi_with_modifier(b'H', mods),
+        KeyCode::End => csi_with_modifier(b'F', mods),
         KeyCode::Insert => vec![0x1b, b'[', b'2', b'~'],
         KeyCode::Delete => tilde_with_modifier(3, mods),
         KeyCode::PageUp => tilde_with_modifier(5, mods),
         KeyCode::PageDown => tilde_with_modifier(6, mods),
         KeyCode::F(n) => {
             let bytes = f_key_bytes(n);
-            if bytes.is_empty() { return None; }
+            if bytes.is_empty() {
+                return None;
+            }
             bytes
         }
         _ => return None,
@@ -540,9 +628,15 @@ fn tilde_with_modifier(n: u8, mods: crossterm::event::KeyModifiers) -> Vec<u8> {
 fn modifier_param(mods: crossterm::event::KeyModifiers) -> u8 {
     use crossterm::event::KeyModifiers;
     let mut m: u8 = 1;
-    if mods.contains(KeyModifiers::SHIFT) { m += 1; }
-    if mods.contains(KeyModifiers::ALT)   { m += 2; }
-    if mods.contains(KeyModifiers::CONTROL) { m += 4; }
+    if mods.contains(KeyModifiers::SHIFT) {
+        m += 1;
+    }
+    if mods.contains(KeyModifiers::ALT) {
+        m += 2;
+    }
+    if mods.contains(KeyModifiers::CONTROL) {
+        m += 4;
+    }
     m
 }
 
@@ -567,16 +661,63 @@ fn f_key_bytes(n: u8) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::commands::Command;
+    use crate::core::keymap::{KeyChord, KeyMap};
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     fn press(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
-        KeyEvent { code, modifiers: mods, kind: KeyEventKind::Press, state: crossterm::event::KeyEventState::empty() }
+        KeyEvent {
+            code,
+            modifiers: mods,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::empty(),
+        }
     }
     fn release(code: KeyCode) -> KeyEvent {
-        KeyEvent { code, modifiers: KeyModifiers::empty(), kind: KeyEventKind::Release, state: crossterm::event::KeyEventState::empty() }
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::empty(),
+            kind: KeyEventKind::Release,
+            state: crossterm::event::KeyEventState::empty(),
+        }
     }
     fn repeat(code: KeyCode) -> KeyEvent {
-        KeyEvent { code, modifiers: KeyModifiers::empty(), kind: KeyEventKind::Repeat, state: crossterm::event::KeyEventState::empty() }
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::empty(),
+            kind: KeyEventKind::Repeat,
+            state: crossterm::event::KeyEventState::empty(),
+        }
+    }
+
+    #[test]
+    fn cheatsheet_includes_default_resize_hotkeys() {
+        let km = KeyMap::default();
+        let entries = cheatsheet_bindings(&km);
+        assert!(entries
+            .iter()
+            .any(|(k, d)| k == "Alt+Shift+←" && *d == "Resize Left"));
+        assert!(entries
+            .iter()
+            .any(|(k, d)| k == "Alt+Shift+→" && *d == "Resize Right"));
+        assert!(entries
+            .iter()
+            .any(|(k, d)| k == "Alt+Shift+↑" && *d == "Resize Up"));
+        assert!(entries
+            .iter()
+            .any(|(k, d)| k == "Alt+Shift+↓" && *d == "Resize Down"));
+    }
+
+    #[test]
+    fn cheatsheet_uses_configured_hotkeys() {
+        let mut km = KeyMap::new();
+        km.bind(KeyChord::parse("x").unwrap(), Command::ClosePane);
+        km.bind_direct(KeyChord::parse("alt+h").unwrap(), Command::ResizeLeft);
+        let entries = cheatsheet_bindings(&km);
+        assert!(entries.iter().any(|(k, d)| k == "x" && *d == "Close Pane"));
+        assert!(entries
+            .iter()
+            .any(|(k, d)| k == "Alt+h" && *d == "Resize Left"));
     }
 
     // ── key_event_to_bytes ────────────────────────────────────────────────────
@@ -609,7 +750,11 @@ mod tests {
     fn ctrl_alpha_sends_control_byte() {
         for (ch, expected) in [('a', 1u8), ('c', 3), ('z', 26)] {
             let event = press(KeyCode::Char(ch), KeyModifiers::CONTROL);
-            assert_eq!(key_event_to_bytes(&event), Some(vec![expected]), "ctrl+{ch}");
+            assert_eq!(
+                key_event_to_bytes(&event),
+                Some(vec![expected]),
+                "ctrl+{ch}"
+            );
         }
     }
 
@@ -622,19 +767,19 @@ mod tests {
     #[test]
     fn special_keys() {
         let cases = [
-            (KeyCode::Enter,     vec![b'\r']),
+            (KeyCode::Enter, vec![b'\r']),
             (KeyCode::Backspace, vec![0x7f]),
-            (KeyCode::Tab,       vec![b'\t']),
-            (KeyCode::Esc,       vec![0x1b]),
-            (KeyCode::Up,        vec![0x1b, b'[', b'A']),
-            (KeyCode::Down,      vec![0x1b, b'[', b'B']),
-            (KeyCode::Right,     vec![0x1b, b'[', b'C']),
-            (KeyCode::Left,      vec![0x1b, b'[', b'D']),
-            (KeyCode::Home,      vec![0x1b, b'[', b'H']),
-            (KeyCode::End,       vec![0x1b, b'[', b'F']),
-            (KeyCode::Delete,    vec![0x1b, b'[', b'3', b'~']),
-            (KeyCode::PageUp,    vec![0x1b, b'[', b'5', b'~']),
-            (KeyCode::PageDown,  vec![0x1b, b'[', b'6', b'~']),
+            (KeyCode::Tab, vec![b'\t']),
+            (KeyCode::Esc, vec![0x1b]),
+            (KeyCode::Up, vec![0x1b, b'[', b'A']),
+            (KeyCode::Down, vec![0x1b, b'[', b'B']),
+            (KeyCode::Right, vec![0x1b, b'[', b'C']),
+            (KeyCode::Left, vec![0x1b, b'[', b'D']),
+            (KeyCode::Home, vec![0x1b, b'[', b'H']),
+            (KeyCode::End, vec![0x1b, b'[', b'F']),
+            (KeyCode::Delete, vec![0x1b, b'[', b'3', b'~']),
+            (KeyCode::PageUp, vec![0x1b, b'[', b'5', b'~']),
+            (KeyCode::PageDown, vec![0x1b, b'[', b'6', b'~']),
         ];
         for (code, expected) in cases {
             let event = press(code, KeyModifiers::empty());
@@ -656,14 +801,20 @@ mod tests {
     fn function_keys_f13_plus_return_none() {
         for n in [13u8, 20, 99] {
             let event = press(KeyCode::F(n), KeyModifiers::empty());
-            assert!(key_event_to_bytes(&event).is_none(), "F{n} should return None");
+            assert!(
+                key_event_to_bytes(&event).is_none(),
+                "F{n} should return None"
+            );
         }
     }
 
     #[test]
     fn insert_key_returns_bytes() {
         let event = press(KeyCode::Insert, KeyModifiers::empty());
-        assert_eq!(key_event_to_bytes(&event), Some(vec![0x1b, b'[', b'2', b'~']));
+        assert_eq!(
+            key_event_to_bytes(&event),
+            Some(vec![0x1b, b'[', b'2', b'~'])
+        );
     }
 
     // ── f_key_bytes ───────────────────────────────────────────────────────────
@@ -696,14 +847,20 @@ mod tests {
     fn shift_up_returns_modified_csi() {
         let event = press(KeyCode::Up, KeyModifiers::SHIFT);
         // \e[1;2A
-        assert_eq!(key_event_to_bytes(&event), Some(vec![0x1b, b'[', b'1', b';', b'2', b'A']));
+        assert_eq!(
+            key_event_to_bytes(&event),
+            Some(vec![0x1b, b'[', b'1', b';', b'2', b'A'])
+        );
     }
 
     #[test]
     fn ctrl_right_returns_modified_csi() {
         let event = press(KeyCode::Right, KeyModifiers::CONTROL);
         // \e[1;5C
-        assert_eq!(key_event_to_bytes(&event), Some(vec![0x1b, b'[', b'1', b';', b'5', b'C']));
+        assert_eq!(
+            key_event_to_bytes(&event),
+            Some(vec![0x1b, b'[', b'1', b';', b'5', b'C'])
+        );
     }
 
     #[test]
@@ -712,4 +869,3 @@ mod tests {
         assert_eq!(key_event_to_bytes(&event), Some(vec![0x1b, b'[', b'D']));
     }
 }
-

@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use crate::core::keymap::KeyMap;
 use crate::core::layout::{Layout, PaneId};
 use crate::core::selection::Selection;
 use crate::traits::{AppEvent, Clipboard, EventSource, PaneBackend, PaneFactory, Renderer};
@@ -18,7 +19,9 @@ pub struct HeadlessEventSource {
 
 impl HeadlessEventSource {
     pub fn new() -> Self {
-        Self { queue: VecDeque::new() }
+        Self {
+            queue: VecDeque::new(),
+        }
     }
 
     pub fn push(&mut self, event: AppEvent) {
@@ -77,7 +80,6 @@ impl PaneBackend for HeadlessPaneBackend {
 /// Factory that creates HeadlessPaneBackend instances.
 pub struct HeadlessPaneFactory;
 
-
 impl PaneFactory<HeadlessPaneBackend> for HeadlessPaneFactory {
     fn spawn(&self, id: PaneId, cols: u16, rows: u16) -> Result<HeadlessPaneBackend> {
         Ok(HeadlessPaneBackend::new(id, cols, rows))
@@ -94,7 +96,10 @@ pub struct HeadlessRenderer {
 
 impl HeadlessRenderer {
     pub fn new() -> Self {
-        Self { frame_count: 0, last_cheatsheet_visible: false }
+        Self {
+            frame_count: 0,
+            last_cheatsheet_visible: false,
+        }
     }
 }
 
@@ -103,6 +108,7 @@ impl Renderer<HeadlessPaneBackend> for HeadlessRenderer {
         &mut self,
         _layout: &Layout,
         _panes: &HashMap<PaneId, HeadlessPaneBackend>,
+        _keymap: &KeyMap,
         _terminal_size: (u16, u16),
         prefix_active: bool,
         _selection: Option<&Selection>,
@@ -122,7 +128,9 @@ pub struct HeadlessClipboard {
 
 impl HeadlessClipboard {
     pub fn new() -> Self {
-        Self { content: String::new() }
+        Self {
+            content: String::new(),
+        }
     }
 }
 

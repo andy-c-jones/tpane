@@ -19,7 +19,10 @@ impl KeyChord {
             KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
             other => other,
         };
-        Self { modifiers: event.modifiers, code }
+        Self {
+            modifiers: event.modifiers,
+            code,
+        }
     }
 
     /// Parse a human-readable chord string from Lua config.
@@ -124,6 +127,34 @@ impl KeyMap {
         self.direct_bindings.get(&chord)
     }
 
+    /// Return all prefix chords currently mapped to `command`.
+    pub fn prefix_chords_for_command(&self, command: Command) -> Vec<KeyChord> {
+        self.prefix_bindings
+            .iter()
+            .filter_map(|(chord, cmd)| {
+                if *cmd == command {
+                    Some(chord.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Return all direct chords currently mapped to `command`.
+    pub fn direct_chords_for_command(&self, command: Command) -> Vec<KeyChord> {
+        self.direct_bindings
+            .iter()
+            .filter_map(|(chord, cmd)| {
+                if *cmd == command {
+                    Some(chord.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Legacy lookup that checks prefix bindings directly (for tests).
     #[allow(dead_code)]
     pub fn lookup(&self, event: &KeyEvent) -> Option<&Command> {
@@ -136,15 +167,15 @@ impl Default for KeyMap {
         let mut km = KeyMap::new();
         let defaults: &[(&str, Command)] = &[
             // Directional splits: Ctrl+Arrow after prefix
-            ("ctrl+left",  Command::SplitLeft),
+            ("ctrl+left", Command::SplitLeft),
             ("ctrl+right", Command::SplitRight),
-            ("ctrl+up",    Command::SplitUp),
-            ("ctrl+down",  Command::SplitDown),
+            ("ctrl+up", Command::SplitUp),
+            ("ctrl+down", Command::SplitDown),
             // Focus movement: Arrow after prefix (spatial navigation)
-            ("left",  Command::FocusLeft),
+            ("left", Command::FocusLeft),
             ("right", Command::FocusRight),
-            ("up",    Command::FocusUp),
-            ("down",  Command::FocusDown),
+            ("up", Command::FocusUp),
+            ("down", Command::FocusDown),
             // Other commands
             ("w", Command::ClosePane),
             ("q", Command::Quit),
@@ -157,10 +188,10 @@ impl Default for KeyMap {
 
         // Direct resize bindings: Alt+Shift+Arrow (no prefix needed; holdable).
         let direct_defaults: &[(&str, Command)] = &[
-            ("alt+shift+left",  Command::ResizeLeft),
+            ("alt+shift+left", Command::ResizeLeft),
             ("alt+shift+right", Command::ResizeRight),
-            ("alt+shift+up",    Command::ResizeUp),
-            ("alt+shift+down",  Command::ResizeDown),
+            ("alt+shift+up", Command::ResizeUp),
+            ("alt+shift+down", Command::ResizeDown),
         ];
         for (chord_str, cmd) in direct_defaults {
             if let Some(chord) = KeyChord::parse(chord_str) {
@@ -233,30 +264,31 @@ mod tests {
     #[test]
     fn parse_special_keys() {
         let cases = [
-            ("enter",     KeyCode::Enter),
-            ("return",    KeyCode::Enter),
-            ("space",     KeyCode::Char(' ')),
-            ("tab",       KeyCode::Tab),
+            ("enter", KeyCode::Enter),
+            ("return", KeyCode::Enter),
+            ("space", KeyCode::Char(' ')),
+            ("tab", KeyCode::Tab),
             ("backspace", KeyCode::Backspace),
-            ("bs",        KeyCode::Backspace),
-            ("delete",    KeyCode::Delete),
-            ("del",       KeyCode::Delete),
-            ("escape",    KeyCode::Esc),
-            ("esc",       KeyCode::Esc),
-            ("up",        KeyCode::Up),
-            ("down",      KeyCode::Down),
-            ("left",      KeyCode::Left),
-            ("right",     KeyCode::Right),
-            ("home",      KeyCode::Home),
-            ("end",       KeyCode::End),
-            ("pageup",    KeyCode::PageUp),
-            ("pgup",      KeyCode::PageUp),
-            ("pagedown",  KeyCode::PageDown),
-            ("pgdn",      KeyCode::PageDown),
-            ("pgdown",    KeyCode::PageDown),
+            ("bs", KeyCode::Backspace),
+            ("delete", KeyCode::Delete),
+            ("del", KeyCode::Delete),
+            ("escape", KeyCode::Esc),
+            ("esc", KeyCode::Esc),
+            ("up", KeyCode::Up),
+            ("down", KeyCode::Down),
+            ("left", KeyCode::Left),
+            ("right", KeyCode::Right),
+            ("home", KeyCode::Home),
+            ("end", KeyCode::End),
+            ("pageup", KeyCode::PageUp),
+            ("pgup", KeyCode::PageUp),
+            ("pagedown", KeyCode::PageDown),
+            ("pgdn", KeyCode::PageDown),
+            ("pgdown", KeyCode::PageDown),
         ];
         for (input, expected_code) in cases {
-            let chord = KeyChord::parse(input).unwrap_or_else(|| panic!("failed to parse '{input}'"));
+            let chord =
+                KeyChord::parse(input).unwrap_or_else(|| panic!("failed to parse '{input}'"));
             assert_eq!(chord.code, expected_code);
         }
     }
@@ -284,7 +316,10 @@ mod tests {
     #[test]
     fn from_event_normalizes_uppercase_char() {
         // crossterm may send Char('T') + SHIFT for Shift+T
-        let event = KeyEvent::new(KeyCode::Char('T'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        let event = KeyEvent::new(
+            KeyCode::Char('T'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
         let chord = KeyChord::from_event(&event);
         assert_eq!(chord.code, KeyCode::Char('t'));
         assert!(chord.modifiers.contains(KeyModifiers::CONTROL));
@@ -317,20 +352,28 @@ mod tests {
     fn lookup_all_default_prefix_bindings() {
         let km = KeyMap::default();
         let cases: &[(KeyCode, KeyModifiers, Command)] = &[
-            (KeyCode::Left,  KeyModifiers::CONTROL, Command::SplitLeft),
+            (KeyCode::Left, KeyModifiers::CONTROL, Command::SplitLeft),
             (KeyCode::Right, KeyModifiers::CONTROL, Command::SplitRight),
-            (KeyCode::Up,    KeyModifiers::CONTROL, Command::SplitUp),
-            (KeyCode::Down,  KeyModifiers::CONTROL, Command::SplitDown),
-            (KeyCode::Left,  KeyModifiers::empty(),  Command::FocusLeft),
-            (KeyCode::Right, KeyModifiers::empty(),  Command::FocusRight),
-            (KeyCode::Up,    KeyModifiers::empty(),  Command::FocusUp),
-            (KeyCode::Down,  KeyModifiers::empty(),  Command::FocusDown),
-            (KeyCode::Char('w'), KeyModifiers::empty(), Command::ClosePane),
+            (KeyCode::Up, KeyModifiers::CONTROL, Command::SplitUp),
+            (KeyCode::Down, KeyModifiers::CONTROL, Command::SplitDown),
+            (KeyCode::Left, KeyModifiers::empty(), Command::FocusLeft),
+            (KeyCode::Right, KeyModifiers::empty(), Command::FocusRight),
+            (KeyCode::Up, KeyModifiers::empty(), Command::FocusUp),
+            (KeyCode::Down, KeyModifiers::empty(), Command::FocusDown),
+            (
+                KeyCode::Char('w'),
+                KeyModifiers::empty(),
+                Command::ClosePane,
+            ),
             (KeyCode::Char('q'), KeyModifiers::empty(), Command::Quit),
         ];
         for (code, mods, expected) in cases {
             let event = KeyEvent::new(*code, *mods);
-            assert_eq!(km.lookup_prefix(&event), Some(expected), "failed for {code:?}+{mods:?}");
+            assert_eq!(
+                km.lookup_prefix(&event),
+                Some(expected),
+                "failed for {code:?}+{mods:?}"
+            );
         }
     }
 
@@ -357,14 +400,18 @@ mod tests {
         let km = KeyMap::default();
         let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
         let cases: &[(KeyCode, Command)] = &[
-            (KeyCode::Left,  Command::ResizeLeft),
+            (KeyCode::Left, Command::ResizeLeft),
             (KeyCode::Right, Command::ResizeRight),
-            (KeyCode::Up,    Command::ResizeUp),
-            (KeyCode::Down,  Command::ResizeDown),
+            (KeyCode::Up, Command::ResizeUp),
+            (KeyCode::Down, Command::ResizeDown),
         ];
         for (code, expected) in cases {
             let event = KeyEvent::new(*code, alt_shift);
-            assert_eq!(km.lookup_direct(&event), Some(expected), "missing direct binding for {code:?}");
+            assert_eq!(
+                km.lookup_direct(&event),
+                Some(expected),
+                "missing direct binding for {code:?}"
+            );
         }
     }
 
@@ -383,5 +430,25 @@ mod tests {
         km.bind_direct(chord, Command::ResizeRight);
         let event = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT);
         assert_eq!(km.lookup_direct(&event), Some(&Command::ResizeRight));
+    }
+
+    #[test]
+    fn prefix_chords_for_command_returns_all_matches() {
+        let mut km = KeyMap::new();
+        km.bind(KeyChord::parse("w").unwrap(), Command::ClosePane);
+        km.bind(KeyChord::parse("x").unwrap(), Command::ClosePane);
+        let mut chords = km.prefix_chords_for_command(Command::ClosePane);
+        chords.sort_by_key(|ch| format!("{:?}+{:?}", ch.modifiers, ch.code));
+        assert_eq!(chords.len(), 2);
+    }
+
+    #[test]
+    fn direct_chords_for_command_returns_all_matches() {
+        let mut km = KeyMap::new();
+        km.bind_direct(KeyChord::parse("alt+h").unwrap(), Command::ResizeLeft);
+        km.bind_direct(KeyChord::parse("alt+left").unwrap(), Command::ResizeLeft);
+        let mut chords = km.direct_chords_for_command(Command::ResizeLeft);
+        chords.sort_by_key(|ch| format!("{:?}+{:?}", ch.modifiers, ch.code));
+        assert_eq!(chords.len(), 2);
     }
 }

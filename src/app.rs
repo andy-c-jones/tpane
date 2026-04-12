@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{KeyEventKind, MouseEventKind, MouseButton, KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 
 use crate::core::commands::Command;
 use crate::core::keymap::KeyMap;
 use crate::core::layout::{Direction, DividerInfo, Layout, Orientation, PaneId, SplitPosition};
 use crate::core::selection::Selection;
-use crate::platform::renderer::{key_event_to_bytes, cheatsheet_bar_height};
+use crate::platform::renderer::{cheatsheet_bar_height, key_event_to_bytes};
 use crate::traits::{AppEvent, Clipboard, EventSource, PaneBackend, PaneFactory, Renderer};
 
 /// How much the ratio changes per resize step (approx 2% of total size).
@@ -88,7 +88,14 @@ impl<B: PaneBackend> App<B> {
     ) -> Result<()> {
         while self.running {
             let show_bar = self.prefix_active && self.show_cheatsheet;
-            renderer.render(&self.layout, &self.panes, self.terminal_size, show_bar, self.selection.as_ref())?;
+            renderer.render(
+                &self.layout,
+                &self.panes,
+                &self.keymap,
+                self.terminal_size,
+                show_bar,
+                self.selection.as_ref(),
+            )?;
 
             match events.next_event(Duration::from_millis(16))? {
                 Some(AppEvent::Key(key)) if key.kind == KeyEventKind::Press => {
@@ -239,36 +246,75 @@ impl<B: PaneBackend> App<B> {
 
     fn dispatch<F: PaneFactory<B>>(&mut self, cmd: Command, factory: &F) -> Result<()> {
         match cmd {
-            Command::SplitVertical => self.split(Orientation::Vertical, SplitPosition::After, None, factory)?,
-            Command::SplitHorizontal => self.split(Orientation::Horizontal, SplitPosition::After, None, factory)?,
-            Command::SplitLeft => self.split(Orientation::Vertical, SplitPosition::Before, None, factory)?,
-            Command::SplitRight => self.split(Orientation::Vertical, SplitPosition::After, None, factory)?,
-            Command::SplitUp => self.split(Orientation::Horizontal, SplitPosition::Before, None, factory)?,
-            Command::SplitDown => self.split(Orientation::Horizontal, SplitPosition::After, None, factory)?,
+            Command::SplitVertical => {
+                self.split(Orientation::Vertical, SplitPosition::After, None, factory)?
+            }
+            Command::SplitHorizontal => {
+                self.split(Orientation::Horizontal, SplitPosition::After, None, factory)?
+            }
+            Command::SplitLeft => {
+                self.split(Orientation::Vertical, SplitPosition::Before, None, factory)?
+            }
+            Command::SplitRight => {
+                self.split(Orientation::Vertical, SplitPosition::After, None, factory)?
+            }
+            Command::SplitUp => self.split(
+                Orientation::Horizontal,
+                SplitPosition::Before,
+                None,
+                factory,
+            )?,
+            Command::SplitDown => {
+                self.split(Orientation::Horizontal, SplitPosition::After, None, factory)?
+            }
             Command::ClosePane => {
                 let id = self.layout.active;
                 self.close_pane(id);
             }
             Command::FocusNext => self.layout.focus_next(),
             Command::FocusPrev => self.layout.focus_prev(),
-            Command::FocusLeft => self.layout.focus_direction(Direction::Left, self.terminal_size),
-            Command::FocusRight => self.layout.focus_direction(Direction::Right, self.terminal_size),
-            Command::FocusUp => self.layout.focus_direction(Direction::Up, self.terminal_size),
-            Command::FocusDown => self.layout.focus_direction(Direction::Down, self.terminal_size),
+            Command::FocusLeft => self
+                .layout
+                .focus_direction(Direction::Left, self.terminal_size),
+            Command::FocusRight => self
+                .layout
+                .focus_direction(Direction::Right, self.terminal_size),
+            Command::FocusUp => self
+                .layout
+                .focus_direction(Direction::Up, self.terminal_size),
+            Command::FocusDown => self
+                .layout
+                .focus_direction(Direction::Down, self.terminal_size),
             Command::ResizeLeft => {
-                self.layout.adjust_pane_ratio(self.layout.active, Orientation::Vertical, -RESIZE_STEP);
+                self.layout.adjust_pane_ratio(
+                    self.layout.active,
+                    Orientation::Vertical,
+                    -RESIZE_STEP,
+                );
                 self.refresh_pane_sizes();
             }
             Command::ResizeRight => {
-                self.layout.adjust_pane_ratio(self.layout.active, Orientation::Vertical, RESIZE_STEP);
+                self.layout.adjust_pane_ratio(
+                    self.layout.active,
+                    Orientation::Vertical,
+                    RESIZE_STEP,
+                );
                 self.refresh_pane_sizes();
             }
             Command::ResizeUp => {
-                self.layout.adjust_pane_ratio(self.layout.active, Orientation::Horizontal, -RESIZE_STEP);
+                self.layout.adjust_pane_ratio(
+                    self.layout.active,
+                    Orientation::Horizontal,
+                    -RESIZE_STEP,
+                );
                 self.refresh_pane_sizes();
             }
             Command::ResizeDown => {
-                self.layout.adjust_pane_ratio(self.layout.active, Orientation::Horizontal, RESIZE_STEP);
+                self.layout.adjust_pane_ratio(
+                    self.layout.active,
+                    Orientation::Horizontal,
+                    RESIZE_STEP,
+                );
                 self.refresh_pane_sizes();
             }
             Command::Quit => self.running = false,
@@ -299,10 +345,11 @@ impl<B: PaneBackend> App<B> {
             Some(ratio) => {
                 let clamped = ratio.clamp(0.05, 0.95);
                 let internal_ratio = match position {
-                    SplitPosition::After  => clamped,
+                    SplitPosition::After => clamped,
                     SplitPosition::Before => 1.0 - clamped,
                 };
-                self.layout.split_with_position_and_ratio(orientation, position, internal_ratio)
+                self.layout
+                    .split_with_position_and_ratio(orientation, position, internal_ratio)
             }
             None => self.layout.split_with_position(orientation, position),
         };
@@ -353,12 +400,36 @@ impl<B: PaneBackend> App<B> {
     ) -> Result<()> {
         for (cmd, ratio) in cmds {
             match cmd {
-                Command::SplitVertical  => self.split(Orientation::Vertical,   SplitPosition::After,  *ratio, factory)?,
-                Command::SplitHorizontal => self.split(Orientation::Horizontal, SplitPosition::After,  *ratio, factory)?,
-                Command::SplitLeft       => self.split(Orientation::Vertical,   SplitPosition::Before, *ratio, factory)?,
-                Command::SplitRight      => self.split(Orientation::Vertical,   SplitPosition::After,  *ratio, factory)?,
-                Command::SplitUp         => self.split(Orientation::Horizontal, SplitPosition::Before, *ratio, factory)?,
-                Command::SplitDown       => self.split(Orientation::Horizontal, SplitPosition::After,  *ratio, factory)?,
+                Command::SplitVertical => {
+                    self.split(Orientation::Vertical, SplitPosition::After, *ratio, factory)?
+                }
+                Command::SplitHorizontal => self.split(
+                    Orientation::Horizontal,
+                    SplitPosition::After,
+                    *ratio,
+                    factory,
+                )?,
+                Command::SplitLeft => self.split(
+                    Orientation::Vertical,
+                    SplitPosition::Before,
+                    *ratio,
+                    factory,
+                )?,
+                Command::SplitRight => {
+                    self.split(Orientation::Vertical, SplitPosition::After, *ratio, factory)?
+                }
+                Command::SplitUp => self.split(
+                    Orientation::Horizontal,
+                    SplitPosition::Before,
+                    *ratio,
+                    factory,
+                )?,
+                Command::SplitDown => self.split(
+                    Orientation::Horizontal,
+                    SplitPosition::After,
+                    *ratio,
+                    factory,
+                )?,
                 other => self.dispatch(other.clone(), factory)?,
             }
         }
@@ -387,7 +458,7 @@ impl<B: PaneBackend> App<B> {
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent, clipboard: &mut dyn Clipboard) {
         let (w, h) = self.terminal_size;
         let cheatsheet_h = if self.prefix_active && self.show_cheatsheet {
-            cheatsheet_bar_height(w)
+            cheatsheet_bar_height(w, &self.keymap)
         } else {
             0
         };
@@ -531,8 +602,10 @@ impl<B: PaneBackend> App<B> {
         row: u16,
     ) -> Option<(PaneId, crate::core::layout::Rect)> {
         for (pane_id, rect) in rects {
-            if col >= rect.x && col < rect.x + rect.width
-                && row >= rect.y && row < rect.y + rect.height
+            if col >= rect.x
+                && col < rect.x + rect.width
+                && row >= rect.y
+                && row < rect.y + rect.height
             {
                 return Some((*pane_id, *rect));
             }
