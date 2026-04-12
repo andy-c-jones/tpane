@@ -30,7 +30,7 @@ pub enum PaneEvent {
 #[derive(Clone)]
 pub struct TpaneEventListener {
     #[allow(dead_code)]
-    sender: mpsc::Sender<PaneEvent>,
+    sender: mpsc::SyncSender<PaneEvent>,
     #[allow(dead_code)]
     pane_id: PaneId,
     title: Arc<Mutex<String>>,
@@ -130,7 +130,7 @@ impl PaneState {
         id: PaneId,
         cols: u16,
         rows: u16,
-        event_tx: mpsc::Sender<PaneEvent>,
+        event_tx: mpsc::SyncSender<PaneEvent>,
     ) -> Result<Self> {
         // Bounded channel for responses the terminal emulator needs to send back
         // to the shell (e.g. DA1 Primary Device Attribute replies).
@@ -335,7 +335,7 @@ fn spawn_pty(
     id: PaneId,
     cols: u16,
     rows: u16,
-    event_tx: mpsc::Sender<PaneEvent>,
+    event_tx: mpsc::SyncSender<PaneEvent>,
     term: Arc<FairMutex<Term<TpaneEventListener>>>,
     pty_slot: Arc<Mutex<Option<PtyHandles>>>,
     input_buffer: Arc<Mutex<Vec<u8>>>,
@@ -392,9 +392,7 @@ fn spawn_pty(
     }
 
     // Notify the UI that the PTY is connected (but shell may still be loading).
-    let _ = event_tx.send(PaneEvent::Data {
-        pane_id: id,
-    });
+    send_pane_data(&event_tx, id);
 
     // Reader loop — reads PTY output and feeds the term.
     // Mark ready on first output so the throbber shows until the shell renders.
@@ -428,7 +426,7 @@ fn spawn_pty(
                 if !ready.load(std::sync::atomic::Ordering::Relaxed) {
                     ready.store(true, std::sync::atomic::Ordering::Release);
                 }
-                let _ = event_tx.send(PaneEvent::Data { pane_id: id });
+                send_pane_data(&event_tx, id);
             }
         }
     }
@@ -503,5 +501,13 @@ fn default_color_for_query(index: usize) -> alacritty_terminal::vte::ansi::Rgb {
         267 => Rgb { r: 0xff, g: 0xff, b: 0xff }, // bright foreground
         268 => Rgb { r: 0x1e, g: 0x1e, b: 0x1e }, // dim background
         _ => Rgb { r: 0xd0, g: 0xd0, b: 0xd0 },
+    }
+}
+
+fn send_pane_data(event_tx: &mpsc::SyncSender<PaneEvent>, pane_id: PaneId) {
+    match event_tx.try_send(PaneEvent::Data { pane_id }) {
+        Ok(_) => {}
+        Err(mpsc::TrySendError::Full(_)) => {}
+        Err(mpsc::TrySendError::Disconnected(_)) => {}
     }
 }

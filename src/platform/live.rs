@@ -17,6 +17,7 @@ use crate::traits::{AppEvent, EventSource, PaneBackend, PaneFactory, Renderer};
 
 const MAX_PANE_EVENTS_PER_TICK: usize = 128;
 const MAX_CROSSTERM_EVENTS_PER_TICK: usize = 128;
+const PANE_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 // ── LiveEventSource ──────────────────────────────────────────────────────────
 
@@ -147,13 +148,13 @@ impl PaneBackend for PaneState {
 
 /// Creates real PaneState instances backed by PTY + alacritty_terminal.
 pub struct LivePaneFactory {
-    event_tx: mpsc::Sender<PaneEvent>,
+    event_tx: mpsc::SyncSender<PaneEvent>,
     event_rx: Option<mpsc::Receiver<PaneEvent>>,
 }
 
 impl LivePaneFactory {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(PANE_EVENT_CHANNEL_CAPACITY);
         Self {
             event_tx: tx,
             event_rx: Some(rx),
