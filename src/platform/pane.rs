@@ -206,13 +206,11 @@ fn spawn_pty(
         *pty_slot.lock() = Some(handles);
     }
 
-    // Mark pane as ready — shell is connected.
-    ready.store(true, std::sync::atomic::Ordering::Release);
-
-    // Notify the UI that content is available.
+    // Notify the UI that the PTY is connected (but shell may still be loading).
     let _ = event_tx.send(PaneEvent::Data { pane_id: id, bytes: Vec::new() });
 
     // Reader loop — reads PTY output and feeds the term.
+    // Mark ready on first output so the throbber shows until the shell renders.
     let mut processor = Processor::<StdSyncHandler>::new();
     let mut buf = [0u8; 4096];
     loop {
@@ -225,6 +223,10 @@ fn spawn_pty(
                 {
                     let mut t = term.lock();
                     processor.advance(&mut *t, &buf[..n]);
+                }
+                // Mark ready on first real output from the shell.
+                if !ready.load(std::sync::atomic::Ordering::Relaxed) {
+                    ready.store(true, std::sync::atomic::Ordering::Release);
                 }
                 let _ = event_tx.send(PaneEvent::Data {
                     pane_id: id,
