@@ -17,11 +17,14 @@ use crate::core::keymap::{KeyChord, KeyMap};
 /// - [`Self::startup_commands`]: startup command sequence captured from Lua
 /// - [`Self::show_cheatsheet`]: whether prefix-mode cheatsheet is shown
 pub struct LuaConfig {
+    /// Effective key map consumed by [`crate::app::App`].
     pub keymap: KeyMap,
     /// Commands to run at startup (from tpane.on_startup), each paired with an optional split ratio.
     /// The ratio is the fraction of space the *active pane* keeps after the split (0.0–1.0).
     pub startup_commands: Vec<(Command, Option<f64>)>,
     /// Show keybinding cheatsheet when prefix key is active.
+    ///
+    /// This toggles prefix-mode UI hints in [`crate::platform::renderer`].
     pub show_cheatsheet: bool,
     _lua: Lua,
 }
@@ -45,6 +48,13 @@ impl LuaConfig {
     }
 
     /// Return the path to the main configuration file (`main.lua`).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// let path = LuaConfig::config_file();
+    /// // ~/.config/tpane/main.lua (unix-like)
+    /// ```
     pub fn config_file() -> PathBuf {
         Self::config_dir().join("main.lua")
     }
@@ -52,6 +62,10 @@ impl LuaConfig {
     /// Ensure the config directory and default file exist.
     ///
     /// If the file is missing, this writes [`DEFAULT_CONFIG`].
+    ///
+    /// # Errors
+    ///
+    /// Returns I/O errors when directory creation or file writes fail.
     pub fn init_if_missing() -> Result<()> {
         let dir = Self::config_dir();
         if !dir.exists() {
@@ -82,6 +96,11 @@ impl LuaConfig {
     ///
     /// This is used by tests and can also be used by future embedding
     /// integrations that provide in-memory config content.
+    ///
+    /// # Behavior
+    ///
+    /// Unknown commands and invalid key chords are ignored, matching runtime
+    /// behavior for permissive user configuration.
     pub fn load_from_source(source: &str) -> Result<Self> {
         // mlua 0.11: LuaError's inner source field is Arc<dyn Error> (no Send+Sync), so it no
         // longer satisfies anyhow's From<E: Send+Sync> bound.  Convert explicitly via format.

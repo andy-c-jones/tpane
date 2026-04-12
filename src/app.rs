@@ -2,6 +2,13 @@
 //!
 //! [`App`] owns the runtime pane set and layout state, processes input events,
 //! dispatches commands, and keeps backend pane geometry synchronized.
+//!
+//! # Key responsibilities
+//!
+//! - Maintain coherent state between [`Layout`] and pane backends
+//! - Apply command dispatch from key/mouse/startup inputs
+//! - Coordinate copy/paste and selection behavior
+//! - Drive rendering through a pluggable [`Renderer`]
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -37,7 +44,9 @@ struct DividerDrag {
 
 /// Central application state, generic over the pane backend.
 pub struct App<B: PaneBackend> {
+    /// Pure layout tree and focus state.
     pub layout: Layout,
+    /// Runtime pane backends keyed by [`PaneId`].
     pub panes: HashMap<PaneId, B>,
     keymap: KeyMap,
     terminal_size: (u16, u16),
@@ -58,6 +67,15 @@ pub struct App<B: PaneBackend> {
 
 impl<B: PaneBackend> App<B> {
     /// Create a new app instance with one root pane spawned by `factory`.
+    ///
+    /// # Notes
+    ///
+    /// The initial pane backend size is based on terminal dimensions minus
+    /// border space, with conservative minimums for very small terminals.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `factory.spawn` fails for the root pane.
     pub fn new<F: PaneFactory<B>>(
         keymap: KeyMap,
         terminal_size: (u16, u16),
@@ -90,6 +108,23 @@ impl<B: PaneBackend> App<B> {
     }
 
     /// Run the event loop until quit.
+    ///
+    /// # Behavior
+    ///
+    /// Event handling precedence is:
+    /// 1. Global shortcuts (copy/paste)
+    /// 2. Prefix-mode command resolution
+    /// 3. Prefix activation
+    /// 4. Direct bindings
+    /// 5. Raw key forwarding
+    ///
+    /// Repeat key events intentionally only trigger direct bindings and raw key
+    /// forwarding.
+    ///
+    /// # Errors
+    ///
+    /// Propagates failures from event polling, renderer calls, and pane input
+    /// writes.
     pub fn run<F: PaneFactory<B>, R: Renderer<B>>(
         &mut self,
         events: &mut dyn EventSource,
@@ -415,6 +450,15 @@ impl<B: PaneBackend> App<B> {
     /// keeps** after the split — e.g. `split_right(0.7)` leaves the original pane at 70% and
     /// the new right pane at 30%.  The value is clamped to [0.05, 0.95].  `None` uses the
     /// default 50/50 split.
+    ///
+    /// # Notes
+    ///
+    /// Non-split commands are dispatched through the normal command handler.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a split requires spawning a pane backend and
+    /// creation fails.
     pub fn apply_startup_commands<F: PaneFactory<B>>(
         &mut self,
         cmds: &[(Command, Option<f64>)],

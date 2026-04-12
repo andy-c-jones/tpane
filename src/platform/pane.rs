@@ -2,6 +2,11 @@
 //!
 //! A [`PaneState`] owns alacritty terminal state plus PTY handles, and bridges
 //! shell I/O/events into the app's event loop.
+//!
+//! # Notes
+//!
+//! PTY spawn is asynchronous so panes can render immediately while the shell
+//! process initializes in the background.
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -36,6 +41,9 @@ pub enum PaneEvent {
 // ── EventListener implementation for alacritty Term ──────────────────────────
 
 /// Forwards terminal events to the main event loop via an mpsc sender.
+///
+/// This listener is attached to the alacritty terminal state and forwards
+/// relevant events (title changes, PTY replies, color/size requests).
 #[derive(Clone)]
 pub struct TpaneEventListener {
     #[allow(dead_code)]
@@ -110,6 +118,7 @@ struct PtyHandles {
 
 /// All runtime state for a single pane.
 pub struct PaneState {
+    /// Pane identifier matching layout membership.
     #[allow(dead_code)]
     pub id: PaneId,
     /// The VT emulator — created immediately so rendering always works.
@@ -118,8 +127,9 @@ pub struct PaneState {
     pty: Arc<Mutex<Option<PtyHandles>>>,
     /// Buffered input written before the PTY is ready.
     input_buffer: Arc<Mutex<Vec<u8>>>,
-    /// Width/height currently allocated to this pane.
+    /// Width currently allocated to this pane.
     pub cols: u16,
+    /// Height currently allocated to this pane.
     pub rows: u16,
     /// Pending resize to apply once PTY is ready.
     pending_resize: Arc<Mutex<Option<(u16, u16)>>>,
@@ -139,6 +149,11 @@ pub struct PaneState {
 impl PaneState {
     /// Spawn a new pane. The Term is created immediately so the pane renders right
     /// away; the actual PTY + shell launch happens on a background thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns setup errors that occur before the background spawn thread
+    /// starts.
     pub fn spawn(
         id: PaneId,
         cols: u16,
@@ -223,6 +238,10 @@ impl PaneState {
     }
 
     /// Write bytes (keyboard input) to the PTY, or buffer if not ready yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when writing to an already-ready PTY fails.
     pub fn write_input(&mut self, bytes: &[u8]) -> Result<()> {
         let mut pty_guard = self.pty.lock();
         if let Some(ref mut handles) = *pty_guard {
@@ -234,6 +253,11 @@ impl PaneState {
     }
 
     /// Resize the PTY and the Term when the pane geometry changes.
+    ///
+    /// # Behavior
+    ///
+    /// If the PTY is not yet ready, the latest size is recorded and applied
+    /// once startup completes.
     pub fn resize(&mut self, cols: u16, rows: u16) {
         if self.cols == cols && self.rows == rows {
             return;
@@ -288,6 +312,11 @@ impl PaneState {
 
     /// Extract text from the terminal grid between two pane-grid-local positions.
     /// Handles line wrapping: wrapped lines don't get a newline inserted.
+    ///
+    /// # Notes
+    ///
+    /// `display_offset` is interpreted as a scrollback offset from the visible
+    /// viewport to preserve selection semantics while output is still arriving.
     pub fn extract_text(
         &self,
         start: (u16, u16),

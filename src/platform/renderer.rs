@@ -62,6 +62,10 @@ pub struct RenderCache {
 }
 
 /// Enter raw mode and alternate screen, return a ratatui Terminal.
+///
+/// # Errors
+///
+/// Returns terminal setup errors from crossterm or ratatui initialization.
 pub fn init_terminal() -> Result<Tui> {
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -75,6 +79,10 @@ pub fn init_terminal() -> Result<Tui> {
 }
 
 /// Restore the terminal to its previous state.
+///
+/// # Errors
+///
+/// Returns an error if terminal teardown operations fail.
 pub fn restore_terminal(tui: &mut Tui) -> Result<()> {
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
@@ -87,6 +95,15 @@ pub fn restore_terminal(tui: &mut Tui) -> Result<()> {
 }
 
 /// Render the full tpane UI: one bordered block per pane, content from the Term grid.
+///
+/// # Behavior
+///
+/// When `prefix_active` is true, a cheatsheet bar is rendered at the bottom and
+/// pane geometry is computed against the remaining vertical space.
+///
+/// # Errors
+///
+/// Returns ratatui backend errors from frame drawing.
 pub fn render(
     tui: &mut Tui,
     cache: &mut RenderCache,
@@ -267,6 +284,10 @@ pub fn render(
 
 /// Compute the cheatsheet bar height for a given terminal width.
 /// Returns lines_of_bindings + 2 (for top/bottom border).
+///
+/// # Notes
+///
+/// The `+2` accounts for border rows around content rows.
 pub fn cheatsheet_bar_height(w: u16, keymap: &KeyMap) -> u16 {
     let entries = cheatsheet_bindings(keymap);
     let inner_w = w.saturating_sub(2) as usize;
@@ -685,6 +706,19 @@ fn ansi_color_to_ratatui(color: alacritty_terminal::vte::ansi::Color) -> Option<
 }
 
 /// Translate a crossterm key event into bytes to send to the PTY.
+///
+/// # Behavior
+///
+/// Only [`KeyEventKind::Press`] events are translated; release and repeat
+/// events return `None`.
+///
+/// # Examples
+///
+/// ```text
+/// Enter -> \\r
+/// Left  -> ESC [ D
+/// Ctrl+C -> 0x03
+/// ```
 pub fn key_event_to_bytes(event: &crossterm::event::KeyEvent) -> Option<Vec<u8>> {
     use crossterm::event::{KeyCode, KeyModifiers};
     if event.kind != KeyEventKind::Press {

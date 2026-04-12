@@ -1,4 +1,10 @@
 //! Key chord parsing and key-to-command mapping.
+//!
+//! # Overview
+//!
+//! [`KeyMap`] stores two binding sets:
+//! - prefix bindings (activated after pressing [`KeyMap::prefix_key`])
+//! - direct bindings (always active)
 
 use std::collections::HashMap;
 
@@ -9,12 +15,18 @@ use crate::core::commands::Command;
 /// A normalized key chord, e.g. Ctrl+Shift+T.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct KeyChord {
+    /// Bitmask of modifier keys such as Ctrl/Alt/Shift.
     pub modifiers: KeyModifiers,
+    /// Key code for the non-modifier part of the chord.
     pub code: KeyCode,
 }
 
 impl KeyChord {
     /// Convert a raw key event into a normalized chord key suitable for hashmap lookup.
+    ///
+    /// # Behavior
+    ///
+    /// Character keys are lowercased so `Shift+x` and `X` map consistently.
     pub fn from_event(event: &KeyEvent) -> Self {
         // Normalize Char to lowercase so bindings stored as "ctrl+shift+t"
         // match real events where crossterm reports Char('T') + SHIFT.
@@ -39,6 +51,10 @@ impl KeyChord {
     /// alt+f4
     /// left
     /// ```
+    ///
+    /// # Notes
+    ///
+    /// Supported modifiers are `ctrl`, `shift`, and `alt`/`meta`.
     pub fn parse(s: &str) -> Option<Self> {
         let parts: Vec<String> = s.to_lowercase().split('+').map(str::to_string).collect();
         if parts.is_empty() {
@@ -114,6 +130,8 @@ impl KeyMap {
     }
 
     /// Register a prefix binding triggered after the prefix key is active.
+    ///
+    /// If the same `chord` is bound multiple times, the last bind wins.
     pub fn bind(&mut self, chord: KeyChord, command: Command) {
         self.prefix_bindings.insert(chord, command);
     }
@@ -127,6 +145,8 @@ impl KeyMap {
     }
 
     /// Check if a key event matches the prefix key.
+    ///
+    /// This comparison uses [`KeyChord::from_event`] normalization.
     pub fn is_prefix(&self, event: &KeyEvent) -> bool {
         KeyChord::from_event(event) == self.prefix_key
     }
@@ -144,6 +164,8 @@ impl KeyMap {
     }
 
     /// Return all prefix chords currently mapped to `command`.
+    ///
+    /// Useful for building UI surfaces such as cheatsheets.
     pub fn prefix_chords_for_command(&self, command: Command) -> Vec<KeyChord> {
         self.prefix_bindings
             .iter()
@@ -158,6 +180,8 @@ impl KeyMap {
     }
 
     /// Return all direct chords currently mapped to `command`.
+    ///
+    /// Useful for showing always-on controls in docs and UI hints.
     pub fn direct_chords_for_command(&self, command: Command) -> Vec<KeyChord> {
         self.direct_bindings
             .iter()

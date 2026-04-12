@@ -1,4 +1,13 @@
 //! Live (real terminal) implementations of the trait abstractions.
+//!
+//! # Overview
+//!
+//! This module binds together:
+//! - crossterm input
+//! - pane PTY events
+//! - ratatui rendering
+//!
+//! to satisfy the trait contracts in [`crate::traits`].
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -30,6 +39,11 @@ pub struct LiveEventSource {
 
 impl LiveEventSource {
     /// Create a new live event source from a pane-event receiver.
+    ///
+    /// # Notes
+    ///
+    /// Events are queued internally and coalesced to reduce redundant render
+    /// churn during drag/resize heavy input.
     pub fn new(pane_rx: mpsc::Receiver<PaneEvent>) -> Self {
         Self {
             pane_rx,
@@ -87,6 +101,12 @@ impl LiveEventSource {
 }
 
 impl EventSource for LiveEventSource {
+    /// Poll and return the next app event.
+    ///
+    /// # Behavior
+    ///
+    /// Pane events are drained first, then crossterm events are polled.
+    /// Drag/resize/pane-data events may be coalesced before delivery.
     fn next_event(&mut self, timeout: Duration) -> Result<Option<AppEvent>> {
         if let Some(event) = self.pop_queued_event() {
             return Ok(Some(event));
@@ -165,6 +185,10 @@ impl LivePaneFactory {
     }
 
     /// Take ownership of the event receiver (call once, before running the app).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called more than once.
     pub fn event_rx(&mut self) -> mpsc::Receiver<PaneEvent> {
         self.event_rx.take().expect("event_rx already taken")
     }
@@ -195,6 +219,7 @@ impl<'a> LiveRenderer<'a> {
 }
 
 impl<'a> Renderer<PaneState> for LiveRenderer<'a> {
+    /// Render one frame using [`crate::platform::renderer::render`].
     fn render(
         &mut self,
         layout: &Layout,
