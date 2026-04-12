@@ -32,7 +32,7 @@ jobs:
           fi
 
   build-and-upload:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.platform }}
     needs: prepare-tag
     runs-on: ${{ matrix.os }}
     strategy:
@@ -40,21 +40,23 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            platform: linux
             target: x86_64-unknown-linux-gnu
-            artifact_name: binary-linux
+            artifact_name: linux
             release_name: tpane
             binary_path: target/x86_64-unknown-linux-gnu/release/tpane
           - os: windows-latest
+            platform: windows
             target: x86_64-pc-windows-msvc
-            artifact_name: binary-windows
+            artifact_name: windows
             release_name: tpane.exe
             binary_path: target/x86_64-pc-windows-msvc/release/tpane.exe
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ needs.prepare-tag.outputs.tag }}
+          ref: ${{ github.sha }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -74,7 +76,7 @@ jobs:
           cp "${{ matrix.binary_path }}" "dist/${{ matrix.release_name }}"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
           path: dist/${{ matrix.release_name }}
@@ -88,15 +90,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download Linux artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
-          name: binary-linux
+          name: linux
           path: dist
 
       - name: Download Windows artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
-          name: binary-windows
+          name: windows
           path: dist
 
       - name: Create immutable release
@@ -104,6 +106,7 @@ jobs:
         with:
           tag: ${{ needs.prepare-tag.outputs.tag }}
           name: ${{ needs.prepare-tag.outputs.tag }}
+          commit: ${{ github.sha }}
           artifacts: "dist/tpane,dist/tpane.exe"
           immutableCreate: true
           generateReleaseNotes: true
