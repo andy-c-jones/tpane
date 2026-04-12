@@ -533,26 +533,35 @@ fn term_to_lines(
     height: u16,
     sel_range: Option<((u16, u16), (u16, u16))>,
 ) -> Option<Vec<TuiLine<'static>>> {
-    let term = pane.term.lock();
-    let content: RenderableContent<'_> = term.renderable_content();
-
     let rows = height as usize;
     let cols = width as usize;
+    let snapshot = {
+        let term = pane.term.lock();
+        let content: RenderableContent<'_> = term.renderable_content();
+        let mut rows_snapshot: Vec<Vec<Cell>> = Vec::with_capacity(rows);
+        for row in 0..rows {
+            let mut row_cells: Vec<Cell> = Vec::with_capacity(cols);
+            for col in 0..cols {
+                let point = Point::new(
+                    Line(row as i32 - content.display_offset as i32),
+                    Column(col),
+                );
+                row_cells.push(term.grid()[point].clone());
+            }
+            rows_snapshot.push(row_cells);
+        }
+        rows_snapshot
+    };
+
     let mut lines: Vec<TuiLine<'static>> = Vec::with_capacity(rows);
     let mut has_visible_content = false;
 
-    for row in 0..rows {
+    for (row, row_cells) in snapshot.iter().enumerate() {
         let mut spans: Vec<Span<'static>> = Vec::new();
         let mut current_text = String::new();
         let mut current_style = Style::default();
 
-        for col in 0..cols {
-            let point = Point::new(
-                Line(row as i32 - content.display_offset as i32),
-                Column(col),
-            );
-            // Access cell via the grid directly
-            let cell = &term.grid()[point];
+        for (col, cell) in row_cells.iter().enumerate() {
             let (ch, mut style) = cell_to_span(cell);
             if ch != ' ' {
                 has_visible_content = true;
