@@ -6,7 +6,9 @@ use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEv
 
 use crate::core::commands::Command;
 use crate::core::keymap::KeyMap;
-use crate::core::layout::{Direction, DividerInfo, Layout, Orientation, PaneId, SplitPosition};
+use crate::core::layout::{
+    Direction, DividerInfo, Layout, Orientation, PaneId, SplitHandle, SplitPosition,
+};
 use crate::core::selection::Selection;
 use crate::platform::renderer::{cheatsheet_bar_height, key_event_to_bytes};
 use crate::traits::{AppEvent, Clipboard, EventSource, PaneBackend, PaneFactory, Renderer};
@@ -18,6 +20,7 @@ const RESIZE_STEP: f64 = 0.02;
 struct DividerDrag {
     first_pane: PaneId,
     second_pane: PaneId,
+    split_handle: Option<SplitHandle>,
     orientation: Orientation,
     /// Start of the split rect along the split axis (x for Vertical, y for Horizontal).
     rect_start: u16,
@@ -494,6 +497,7 @@ impl<B: PaneBackend> App<B> {
                     self.resize_drag = Some(DividerDrag {
                         first_pane: div.first_pane,
                         second_pane: div.second_pane,
+                        split_handle: self.layout.split_handle(div.first_pane, div.second_pane),
                         orientation: div.orientation,
                         rect_start: div.rect_start,
                         rect_size: div.rect_size,
@@ -546,8 +550,12 @@ impl<B: PaneBackend> App<B> {
 
                         let new_ratio =
                             (axis_coord.saturating_sub(drag.rect_start)) as f64 / drag.rect_size as f64;
-                        let (fp, sp) = (drag.first_pane, drag.second_pane);
-                        self.layout.set_split_ratio(fp, sp, new_ratio);
+                        if let Some(handle) = drag.split_handle.as_ref() {
+                            self.layout.set_split_ratio_with_handle(handle, new_ratio);
+                        } else {
+                            let (fp, sp) = (drag.first_pane, drag.second_pane);
+                            self.layout.set_split_ratio(fp, sp, new_ratio);
+                        }
                         self.refresh_pane_sizes();
                     }
                     return;

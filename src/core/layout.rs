@@ -62,6 +62,12 @@ pub struct DividerInfo {
     pub rect_size: u16,
 }
 
+/// Stable handle to a specific split node in the current tree.
+#[derive(Debug, Clone)]
+pub struct SplitHandle {
+    path: Vec<bool>,
+}
+
 /// The full layout state.
 pub struct Layout {
     pub root: Node,
@@ -238,6 +244,22 @@ impl Layout {
     /// `new_ratio` is clamped to [0.05, 0.95].
     pub fn set_split_ratio(&mut self, first_pane: PaneId, second_pane: PaneId, new_ratio: f64) {
         set_ratio_for_split(&mut self.root, first_pane, second_pane, new_ratio);
+    }
+
+    /// Build a reusable handle to a split identified by its representative leaf pane IDs.
+    pub fn split_handle(&self, first_pane: PaneId, second_pane: PaneId) -> Option<SplitHandle> {
+        let mut path = Vec::new();
+        if find_split_path(&self.root, first_pane, second_pane, &mut path) {
+            Some(SplitHandle { path })
+        } else {
+            None
+        }
+    }
+
+    /// Set split ratio using a previously resolved split handle.
+    /// Returns false if the handle no longer points to a split in the current tree.
+    pub fn set_split_ratio_with_handle(&mut self, handle: &SplitHandle, new_ratio: f64) -> bool {
+        set_ratio_at_path(&mut self.root, &handle.path, new_ratio)
     }
 
     /// Focus the nearest pane in the given direction using spatial geometry.
@@ -525,6 +547,57 @@ fn set_ratio_for_split(
             } else {
                 set_ratio_for_split(first, first_pane, second_pane, new_ratio)
                     || set_ratio_for_split(second, first_pane, second_pane, new_ratio)
+            }
+        }
+    }
+}
+
+fn find_split_path(
+    node: &Node,
+    first_pane: PaneId,
+    second_pane: PaneId,
+    path: &mut Vec<bool>,
+) -> bool {
+    match node {
+        Node::Leaf(_) => false,
+        Node::Split { first, second, .. } => {
+            if first_leaf_id(first) == first_pane && first_leaf_id(second) == second_pane {
+                return true;
+            }
+
+            path.push(false);
+            if find_split_path(first, first_pane, second_pane, path) {
+                return true;
+            }
+            path.pop();
+
+            path.push(true);
+            if find_split_path(second, first_pane, second_pane, path) {
+                return true;
+            }
+            path.pop();
+
+            false
+        }
+    }
+}
+
+fn set_ratio_at_path(node: &mut Node, path: &[bool], new_ratio: f64) -> bool {
+    match node {
+        Node::Leaf(_) => false,
+        Node::Split { ratio, .. } if path.is_empty() => {
+            *ratio = new_ratio.clamp(0.05, 0.95);
+            true
+        }
+        Node::Split { first, second, .. } => {
+            if let Some((&head, tail)) = path.split_first() {
+                if head {
+                    set_ratio_at_path(second, tail, new_ratio)
+                } else {
+                    set_ratio_at_path(first, tail, new_ratio)
+                }
+            } else {
+                false
             }
         }
     }
@@ -999,6 +1072,26 @@ mod tests {
         assert!(
             first_w >= 28 && first_w <= 32,
             "width should be near 30 for ratio 0.3, got {first_w}"
+        );
+    }
+
+    #[test]
+    fn split_handle_updates_target_split_ratio() {
+        let mut layout = Layout::new();
+        layout.split(Orientation::Vertical);
+        let dividers = layout.compute_dividers(100, 40);
+        let d = dividers[0];
+
+        let handle = layout
+            .split_handle(d.first_pane, d.second_pane)
+            .expect("split handle should exist");
+        assert!(layout.set_split_ratio_with_handle(&handle, 0.7));
+
+        let rects = layout.compute_rects(100, 40);
+        let first_w = rects[&d.first_pane].width;
+        assert!(
+            first_w >= 68 && first_w <= 72,
+            "width should be near 70 for ratio 0.7, got {first_w}"
         );
     }
 }
