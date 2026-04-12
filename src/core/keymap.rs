@@ -109,6 +109,7 @@ impl KeyMap {
     }
 
     /// Legacy lookup that checks prefix bindings directly (for tests).
+    #[allow(dead_code)]
     pub fn lookup(&self, event: &KeyEvent) -> Option<&Command> {
         self.lookup_prefix(event)
     }

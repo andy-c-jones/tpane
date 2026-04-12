@@ -16,7 +16,7 @@ use crate::core::layout::PaneId;
 
 #[derive(Debug)]
 pub enum PaneEvent {
-    Data { pane_id: PaneId, bytes: Vec<u8> },
+    Data { pane_id: PaneId, #[allow(dead_code)] bytes: Vec<u8> },
     Exit { pane_id: PaneId },
 }
 
@@ -25,7 +25,9 @@ pub enum PaneEvent {
 /// Forwards terminal events to the main event loop via an mpsc sender.
 #[derive(Clone)]
 pub struct TpaneEventListener {
+    #[allow(dead_code)]
     sender: mpsc::Sender<PaneEvent>,
+    #[allow(dead_code)]
     pane_id: PaneId,
     title: Arc<Mutex<String>>,
 }
@@ -54,6 +56,7 @@ struct PtyHandles {
 
 /// All runtime state for a single pane.
 pub struct PaneState {
+    #[allow(dead_code)]
     pub id: PaneId,
     /// The VT emulator — created immediately so rendering always works.
     pub term: Arc<FairMutex<Term<TpaneEventListener>>>,
@@ -67,6 +70,7 @@ pub struct PaneState {
     /// Pending resize to apply once PTY is ready.
     pending_resize: Arc<Mutex<Option<(u16, u16)>>>,
     /// True once the PTY background spawn has completed and shell is connected.
+    #[allow(dead_code)]
     ready: Arc<std::sync::atomic::AtomicBool>,
     /// Terminal title set via OSC escape sequences (e.g. by the shell or running program).
     title: Arc<Mutex<String>>,
@@ -153,6 +157,7 @@ impl PaneState {
     }
 
     /// Whether the PTY has finished spawning and the shell is connected.
+    #[allow(dead_code)]
     pub fn is_ready(&self) -> bool {
         self.ready.load(std::sync::atomic::Ordering::Relaxed)
     }

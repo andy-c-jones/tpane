@@ -12,7 +12,7 @@ pub enum AppEvent {
     Key(KeyEvent),
     Mouse(MouseEvent),
     Resize(u16, u16),
-    PaneData { pane_id: PaneId },
+    PaneData { #[allow(dead_code)] pane_id: PaneId },
     PaneExit { pane_id: PaneId },
 }
 

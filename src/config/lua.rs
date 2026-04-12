@@ -11,6 +11,7 @@ use crate::core::keymap::{KeyChord, KeyMap};
 pub struct LuaConfig {
     pub keymap: KeyMap,
     /// Commands to run at startup (from tpane.on_startup).
+    #[allow(dead_code)]
     pub startup_commands: Vec<Command>,
     /// Show keybinding cheatsheet when prefix key is active.
     pub show_cheatsheet: bool,

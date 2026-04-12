@@ -368,23 +368,28 @@ impl<B: PaneBackend> App<B> {
         None
     }
 
+    #[allow(dead_code)]
     pub fn is_running(&self) -> bool {
         self.running
     }
 
+    #[allow(dead_code)]
     pub fn pane_count(&self) -> usize {
         self.panes.len()
     }
 
+    #[allow(dead_code)]
     pub fn active_pane(&self) -> PaneId {
         self.layout.active
     }
 
+    #[allow(dead_code)]
     pub fn is_prefix_active(&self) -> bool {
         self.prefix_active
     }
 
     /// Process a single event without a render step (useful for tests).
+    #[allow(dead_code)]
     pub fn process_event<F: PaneFactory<B>>(
         &mut self,
         event: AppEvent,

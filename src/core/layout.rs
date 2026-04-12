@@ -64,6 +64,7 @@ impl Layout {
     }
 
     /// Split the active pane (new pane goes after/right/below), returning the new pane's ID.
+    #[allow(dead_code)]
     pub fn split(&mut self, orientation: Orientation) -> PaneId {
         self.split_with_position(orientation, SplitPosition::After)
     }
@@ -79,6 +80,7 @@ impl Layout {
     }
 
     /// Close the active pane. Returns false if it is the last pane.
+    #[allow(dead_code)]
     pub fn close_active(&mut self) -> bool {
         self.close_pane(self.active)
     }
@@ -137,6 +139,7 @@ impl Layout {
         }
     }
 
+    #[allow(dead_code)]
     pub fn leaf_ids(&self) -> Vec<PaneId> {
         collect_leaves(&self.root)
     }

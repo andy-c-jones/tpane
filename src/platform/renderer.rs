@@ -229,13 +229,9 @@ fn render_cheatsheet(
     // Build lines that fit within inner_w, wrapping as needed.
     let mut lines: Vec<TuiLine> = Vec::new();
     let mut spans: Vec<Span> = Vec::new();
-    let mut line_len: usize = 0;
-
-    // First line starts with the title.
-    let title_prefix = " tpane │ ";
+    let mut line_len: usize = " tpane │ ".chars().count();
     spans.push(Span::styled(" tpane ", title_style));
     spans.push(Span::styled("│ ", sep_style));
-    line_len = title_prefix.chars().count();
 
     for (i, (key, desc)) in all_bindings.iter().enumerate() {
         // Calculate width of this binding entry: " │ key desc" or "key desc" for first on line.
@@ -370,9 +366,6 @@ fn term_to_text(
 
 /// Convert an alacritty cell to a (char, ratatui Style) pair.
 fn cell_to_span(cell: &Cell) -> (char, Style) {
-    use alacritty_terminal::term::color::Colors;
-    use alacritty_terminal::vte::ansi::{Color as AColor, NamedColor};
-
     let ch = if cell.c == '\0' { ' ' } else { cell.c };
 
     let fg = ansi_color_to_ratatui(cell.fg);
