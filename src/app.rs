@@ -8,7 +8,7 @@ use crate::core::commands::Command;
 use crate::core::keymap::KeyMap;
 use crate::core::layout::{Layout, Orientation, PaneId, SplitPosition};
 use crate::core::selection::Selection;
-use crate::platform::renderer::key_event_to_bytes;
+use crate::platform::renderer::{key_event_to_bytes, cheatsheet_bar_height};
 use crate::traits::{AppEvent, Clipboard, EventSource, PaneBackend, PaneFactory, Renderer};
 
 /// Central application state, generic over the pane backend.
@@ -271,7 +271,11 @@ impl<B: PaneBackend> App<B> {
 
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent, clipboard: &mut dyn Clipboard) {
         let (w, h) = self.terminal_size;
-        let cheatsheet_h = if self.prefix_active && self.show_cheatsheet { 3 } else { 0 };
+        let cheatsheet_h = if self.prefix_active && self.show_cheatsheet {
+            cheatsheet_bar_height(w)
+        } else {
+            0
+        };
         let rects = self.layout.compute_rects(w, h.saturating_sub(cheatsheet_h));
 
         match mouse.kind {

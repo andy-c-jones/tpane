@@ -65,7 +65,11 @@ pub fn render(
         let (w, h) = terminal_size;
 
         // Reserve space for cheatsheet bar when prefix is active.
-        let cheatsheet_height: u16 = if prefix_active { 3 } else { 0 };
+        let cheatsheet_height: u16 = if prefix_active {
+            cheatsheet_bar_height(w)
+        } else {
+            0
+        };
         let pane_area_h = h.saturating_sub(cheatsheet_height);
         let rects = layout.compute_rects(w, pane_area_h);
 
@@ -154,13 +158,114 @@ pub fn render(
     Ok(())
 }
 
+/// Compute the cheatsheet bar height for a given terminal width.
+/// Returns lines_of_bindings + 2 (for top/bottom border).
+pub fn cheatsheet_bar_height(w: u16) -> u16 {
+    let all_bindings: &[(&str, &str)] = &[
+        ("Ctrl+←", "Split Left"),
+        ("Ctrl+→", "Split Right"),
+        ("Ctrl+↑", "Split Up"),
+        ("Ctrl+↓", "Split Down"),
+        ("←↑↓→", "Focus"),
+        ("w", "Close Pane"),
+        ("q", "Quit"),
+        ("Ctrl+Shift+C", "Copy"),
+        ("Ctrl+Shift+V", "Paste"),
+        ("Right-Click", "Copy"),
+    ];
+
+    let inner_w = w.saturating_sub(2) as usize;
+    let title_prefix_len = " tpane │ ".chars().count();
+    let mut lines: u16 = 1;
+    let mut line_len = title_prefix_len;
+
+    for (i, (key, desc)) in all_bindings.iter().enumerate() {
+        let sep_w = if i > 0 && line_len > 0 { 3 } else { 0 };
+        let entry_w = key.chars().count() + 1 + desc.chars().count();
+        let needed = sep_w + entry_w;
+
+        if line_len > 0 && line_len + needed > inner_w {
+            lines += 1;
+            line_len = 0;
+        }
+        if line_len > 0 {
+            line_len += 3;
+        }
+        line_len += entry_w;
+    }
+
+    lines + 2 // +2 for border
+}
+
 /// Draw a styled cheatsheet bar showing available keybindings.
+/// Dynamically wraps bindings across multiple lines to fit the terminal width.
 fn render_cheatsheet(
     frame: &mut ratatui::Frame,
     w: u16,
     h: u16,
-    bar_height: u16,
+    _bar_height: u16,
 ) {
+    let key_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let sep_style = Style::default().fg(Color::DarkGray);
+    let desc_style = Style::default().fg(Color::White);
+    let title_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+
+    let all_bindings: &[(&str, &str)] = &[
+        ("Ctrl+←", "Split Left"),
+        ("Ctrl+→", "Split Right"),
+        ("Ctrl+↑", "Split Up"),
+        ("Ctrl+↓", "Split Down"),
+        ("←↑↓→", "Focus"),
+        ("w", "Close Pane"),
+        ("q", "Quit"),
+        ("Ctrl+Shift+C", "Copy"),
+        ("Ctrl+Shift+V", "Paste"),
+        ("Right-Click", "Copy"),
+    ];
+
+    // Available width inside the border (2 chars for left/right border).
+    let inner_w = w.saturating_sub(2) as usize;
+
+    // Build lines that fit within inner_w, wrapping as needed.
+    let mut lines: Vec<TuiLine> = Vec::new();
+    let mut spans: Vec<Span> = Vec::new();
+    let mut line_len: usize = 0;
+
+    // First line starts with the title.
+    let title_prefix = " tpane │ ";
+    spans.push(Span::styled(" tpane ", title_style));
+    spans.push(Span::styled("│ ", sep_style));
+    line_len = title_prefix.chars().count();
+
+    for (i, (key, desc)) in all_bindings.iter().enumerate() {
+        // Calculate width of this binding entry: " │ key desc" or "key desc" for first on line.
+        let sep_w = if i > 0 && line_len > 0 { 3 } else { 0 }; // " │ "
+        let entry_w = key.chars().count() + 1 + desc.chars().count(); // "key desc"
+        let needed = sep_w + entry_w;
+
+        if line_len > 0 && line_len + needed > inner_w {
+            // Wrap: finish current line and start a new one.
+            lines.push(TuiLine::from(std::mem::take(&mut spans)));
+            line_len = 0;
+        }
+
+        if line_len > 0 {
+            spans.push(Span::styled(" │ ", sep_style));
+            line_len += 3;
+        }
+        spans.push(Span::styled(*key, key_style));
+        spans.push(Span::styled(" ", desc_style));
+        spans.push(Span::styled(*desc, desc_style));
+        line_len += entry_w;
+    }
+    if !spans.is_empty() {
+        lines.push(TuiLine::from(spans));
+    }
+
+    // Dynamic bar height: lines + 2 for border.
+    let content_rows = lines.len() as u16;
+    let bar_height = (content_rows + 2).min(h);
+
     let bar_rect = TuiRect {
         x: 0,
         y: h.saturating_sub(bar_height),
@@ -168,54 +273,11 @@ fn render_cheatsheet(
         height: bar_height,
     };
 
-    let key_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
-    let sep_style = Style::default().fg(Color::DarkGray);
-    let desc_style = Style::default().fg(Color::White);
-    let title_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-
-    let bindings: &[(&str, &str)] = &[
-        ("Ctrl+←", "Split Left"),
-        ("Ctrl+→", "Split Right"),
-        ("Ctrl+↑", "Split Up"),
-        ("Ctrl+↓", "Split Down"),
-        ("←↑↓→", "Focus Pane"),
-        ("w", "Close Pane"),
-        ("q", "Quit tpane"),
-    ];
-
-    // Global bindings shown after the separator.
-    let global_bindings: &[(&str, &str)] = &[
-        ("Ctrl+Shift+C", "Copy"),
-        ("Ctrl+Shift+V", "Paste"),
-        ("Right-Click", "Copy"),
-    ];
-
-    let mut spans: Vec<Span> = vec![
-        Span::styled(" tpane ", title_style),
-        Span::styled("│ ", sep_style),
-    ];
-    for (i, (key, desc)) in bindings.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(" │ ", sep_style));
-        }
-        spans.push(Span::styled(*key, key_style));
-        spans.push(Span::styled(" ", desc_style));
-        spans.push(Span::styled(*desc, desc_style));
-    }
-    // Global bindings (always available, not prefix-dependent).
-    for (key, desc) in global_bindings {
-        spans.push(Span::styled(" │ ", sep_style));
-        spans.push(Span::styled(*key, key_style));
-        spans.push(Span::styled(" ", desc_style));
-        spans.push(Span::styled(*desc, desc_style));
-    }
-
-    let line = TuiLine::from(spans);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
         .title(Span::styled(" Keybindings ", title_style));
-    let para = Paragraph::new(Text::from(line)).block(block);
+    let para = Paragraph::new(Text::from(lines)).block(block);
     frame.render_widget(para, bar_rect);
 }
 
