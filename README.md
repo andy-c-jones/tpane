@@ -12,6 +12,7 @@ tpane splits your terminal into panes — vertically then horizontally — and l
 - **Cross-platform** — Linux and Windows Terminal (via ConPTY)
 - **Lua configuration** — keybindings, startup layouts, and extensible commands
 - **Per-pane VT emulation** — powered by [alacritty_terminal](https://crates.io/crates/alacritty_terminal)
+- **Mouse interactions** — click to focus, drag dividers to resize, and selection copy/paste helpers
 - **Kitty keyboard protocol** support
 
 ## Installation
@@ -45,10 +46,21 @@ tpane uses a **prefix key** system (like tmux). Press `Ctrl+B` first, then the c
 | `Ctrl+→` | Split right (new pane on the right) |
 | `Ctrl+↑` | Split up (new pane above) |
 | `Ctrl+↓` | Split down (new pane below) |
-| `←` / `↑` | Focus previous pane |
-| `→` / `↓` | Focus next pane |
+| `←` | Focus nearest pane on the left |
+| `→` | Focus nearest pane on the right |
+| `↑` | Focus nearest pane above |
+| `↓` | Focus nearest pane below |
 | `w` | Close pane |
 | `q` | Quit |
+
+Direct (no prefix) resize keybindings:
+
+| Key | Action |
+|-----|--------|
+| `Alt+Shift+←` | Grow pane to the left |
+| `Alt+Shift+→` | Grow pane to the right |
+| `Alt+Shift+↑` | Grow pane upward |
+| `Alt+Shift+↓` | Grow pane downward |
 
 ## Configuration
 
@@ -77,8 +89,17 @@ end)
 | `split_horizontal` | Split the active pane top/bottom (alias for `split_down`) |
 | `split` | Alias for `split_vertical` |
 | `close` | Close the active pane |
+| `close_pane` | Alias for `close` |
 | `focus_next` | Move focus to the next pane |
 | `focus_prev` | Move focus to the previous pane |
+| `focus_left` | Move focus to the nearest pane on the left |
+| `focus_right` | Move focus to the nearest pane on the right |
+| `focus_up` | Move focus to the nearest pane above |
+| `focus_down` | Move focus to the nearest pane below |
+| `resize_left` | Grow the active pane to the left |
+| `resize_right` | Grow the active pane to the right |
+| `resize_up` | Grow the active pane upward |
+| `resize_down` | Grow the active pane downward |
 | `quit` | Exit tpane |
 
 ### Key format
@@ -93,8 +114,11 @@ Key names: `a`–`z`, `0`–`9`, `f1`–`f12`, `enter`, `space`, `tab`, `backspa
 # Build
 cargo build
 
-# Run tests (91 tests, ~78% coverage)
+# Run tests
 cargo test
+
+# CI-style tests (nextest profile)
+cargo nextest run --workspace --all-targets --profile ci
 
 # Coverage report (requires cargo-llvm-cov)
 cargo llvm-cov --html
@@ -111,14 +135,6 @@ tpane uses trait-based abstractions for testability:
 - **`Renderer`** — draws the UI
 
 `App<B: PaneBackend>` is generic over the backend. Production uses real PTY/terminal implementations; tests use headless mocks that run without a terminal.
-
-## Roadmap
-
-- [ ] Switch VT backend to [libghostty-vt](https://github.com/ghostty-org/ghostty) once Rust bindings are available
-- [ ] Mouse support
-- [ ] Scrollback buffer
-- [ ] Named panes and pane navigation by name
-- [ ] Plugin system via Lua
 
 ## License
 
