@@ -4,7 +4,7 @@
 //! translating crossterm key events into byte sequences expected by shells.
 
 use std::collections::HashMap;
-use std::io::{self, Stdout};
+use std::io::{self, Stdout, Write};
 use std::time::Instant;
 
 use alacritty_terminal::index::{Column, Line, Point};
@@ -50,6 +50,24 @@ struct PaneRenderCache {
     content: Option<Vec<TuiLine<'static>>>,
     /// Cursor position relative to the pane's inner content area, if visible.
     cursor_pos: Option<(u16, u16)>,
+    /// Cells in this pane that carry OSC 8 hyperlinks.
+    hyperlinks: Vec<HyperlinkCell>,
+}
+
+/// A single terminal cell that carries an OSC 8 hyperlink.
+///
+/// Style is captured after all transforms (selection inversion, cursor inversion)
+/// so that re-rendering in the post-draw pass is pixel-accurate.
+#[derive(Debug, Clone)]
+struct HyperlinkCell {
+    /// Row relative to the pane's inner content area.
+    row: u16,
+    /// Column relative to the pane's inner content area.
+    col: u16,
+    ch: char,
+    style: Style,
+    uri: String,
+    id: String,
 }
 
 /// Cache object reused across frames by the live renderer.
@@ -117,16 +135,18 @@ pub fn render(
     prefix_active: bool,
     selection: Option<&Selection>,
 ) -> Result<()> {
-    tui.draw(|frame| {
-        let (w, h) = terminal_size;
+    let (w, h) = terminal_size;
 
-        // Reserve space for cheatsheet bar when prefix is active.
-        let cheatsheet_height: u16 = if prefix_active {
-            cheatsheet_bar_height_cached(cache, w, keymap)
-        } else {
-            0
-        };
-        let pane_area_h = h.saturating_sub(cheatsheet_height);
+    // Compute cheatsheet height before the draw closure so it is available for
+    // the post-draw hyperlink pass that needs the same pane geometry.
+    let cheatsheet_height: u16 = if prefix_active {
+        cheatsheet_bar_height_cached(cache, w, keymap)
+    } else {
+        0
+    };
+    let pane_area_h = h.saturating_sub(cheatsheet_height);
+
+    tui.draw(|frame| {
         let (rects, dividers) = layout.compute_geometry(w, pane_area_h);
         cache.pane_content.retain(|id, _| rects.contains_key(id));
         cache.pane_titles.retain(|id, _| rects.contains_key(id));
@@ -215,6 +235,7 @@ pub fn render(
                                 key,
                                 content: built.lines,
                                 cursor_pos: built.cursor_pos,
+                                hyperlinks: built.hyperlinks,
                             },
                         );
                         cache
@@ -292,7 +313,225 @@ pub fn render(
             }
         }
     })?;
+
+    // Post-draw pass: re-emit OSC 8 hyperlink sequences directly to stdout so the
+    // outer terminal emulator can make links ctrl+clickable.  ratatui's cell-based
+    // diff renderer knows nothing about OSC 8, so we annotate the hyperlink cells
+    // ourselves after every draw.
+    let (rects, _) = layout.compute_geometry(w, pane_area_h);
+    emit_hyperlink_annotations(cache, layout, &rects)?;
+
     Ok(())
+}
+
+/// After `tui.draw()` completes, re-emit OSC 8 hyperlink sequences directly to
+/// stdout so the outer terminal emulator can make links ctrl+clickable.
+///
+/// ratatui's diff renderer writes terminal cells without any knowledge of OSC 8
+/// hyperlinks.  This pass iterates over every pane that has hyperlink cells in
+/// the current render cache and overwrites those cells — with the same character
+/// and style that ratatui already drew — but wrapped in OSC 8 open/close
+/// sequences.  The outer terminal emulator then associates those cells with the
+/// URI and enables ctrl+click navigation.
+///
+/// Consecutive cells on the same row that share the same `(uri, id)` are
+/// coalesced into a single OSC 8 run to minimise escape-sequence overhead.
+///
+/// After annotating, SGR is reset to avoid color bleeding and the hardware
+/// cursor is restored to the position ratatui left it at.
+fn emit_hyperlink_annotations(
+    cache: &RenderCache,
+    layout: &Layout,
+    rects: &HashMap<PaneId, crate::core::layout::Rect>,
+) -> io::Result<()> {
+    if cache.pane_content.values().all(|c| c.hyperlinks.is_empty()) {
+        return Ok(());
+    }
+
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+
+    for (pane_id, cached) in &cache.pane_content {
+        if cached.hyperlinks.is_empty() {
+            continue;
+        }
+        let rect = match rects.get(pane_id) {
+            Some(r) => r,
+            None => continue,
+        };
+        let inner_x = rect.x + 1;
+        let inner_y = rect.y + 1;
+
+        let cells = &cached.hyperlinks;
+        let mut i = 0;
+        while i < cells.len() {
+            let start = &cells[i];
+
+            // Extend the run as long as cells are on the same row, have
+            // consecutive columns, and share the same (uri, id) pair.
+            let mut j = i + 1;
+            while j < cells.len() {
+                let prev = &cells[j - 1];
+                let curr = &cells[j];
+                if curr.uri == start.uri
+                    && curr.id == start.id
+                    && curr.row == prev.row
+                    && curr.col == prev.col + 1
+                {
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // 1-indexed absolute screen position.
+            let abs_row = inner_y + start.row + 1;
+            let abs_col = inner_x + start.col + 1;
+
+            write!(out, "\x1b[{abs_row};{abs_col}H")?;
+            write!(out, "\x1b]8;;{}\x1b\\", start.uri)?;
+
+            let mut cur_style: Option<Style> = None;
+            for cell in &cells[i..j] {
+                if Some(cell.style) != cur_style {
+                    write!(out, "{}", style_to_sgr(&cell.style))?;
+                    cur_style = Some(cell.style);
+                }
+                write!(out, "{}", cell.ch)?;
+            }
+
+            write!(out, "\x1b]8;;\x1b\\")?;
+            i = j;
+        }
+    }
+
+    // Reset SGR so no color state leaks to subsequent terminal output.
+    write!(out, "\x1b[0m")?;
+
+    // Restore the cursor to where ratatui left it (active pane cursor).
+    if let Some(rect) = rects.get(&layout.active) {
+        let inner_x = rect.x + 1;
+        let inner_y = rect.y + 1;
+        if let Some(cached) = cache.pane_content.get(&layout.active) {
+            if let Some((col, row)) = cached.cursor_pos {
+                write!(out, "\x1b[{};{}H", inner_y + row + 1, inner_x + col + 1)?;
+            }
+        }
+    }
+
+    out.flush()?;
+    Ok(())
+}
+
+/// Build an ANSI SGR escape sequence for a ratatui [`Style`].
+///
+/// Always starts with a full reset (`\x1b[0m`) so previously active
+/// attributes do not bleed into the re-rendered cell.
+fn style_to_sgr(style: &Style) -> String {
+    let mut codes: Vec<String> = vec!["0".to_string()];
+    if let Some(fg) = style.fg {
+        if let Some(code) = ratatui_color_to_ansi_code(fg, true) {
+            codes.push(code);
+        }
+    }
+    if let Some(bg) = style.bg {
+        if let Some(code) = ratatui_color_to_ansi_code(bg, false) {
+            codes.push(code);
+        }
+    }
+    if style.add_modifier.contains(Modifier::BOLD) {
+        codes.push("1".to_string());
+    }
+    if style.add_modifier.contains(Modifier::ITALIC) {
+        codes.push("3".to_string());
+    }
+    if style.add_modifier.contains(Modifier::UNDERLINED) {
+        codes.push("4".to_string());
+    }
+    format!("\x1b[{}m", codes.join(";"))
+}
+
+/// Map a ratatui [`Color`] to its ANSI SGR numeric code.
+///
+/// Returns `None` for [`Color::Reset`] (handled by the leading `0` in [`style_to_sgr`])
+/// and any unrecognised variants.
+fn ratatui_color_to_ansi_code(color: Color, is_fg: bool) -> Option<String> {
+    let base: u8 = if is_fg { 30 } else { 40 };
+    Some(match color {
+        Color::Reset => return None,
+        Color::Black => base.to_string(),
+        Color::Red => (base + 1).to_string(),
+        Color::Green => (base + 2).to_string(),
+        Color::Yellow => (base + 3).to_string(),
+        Color::Blue => (base + 4).to_string(),
+        Color::Magenta => (base + 5).to_string(),
+        Color::Cyan => (base + 6).to_string(),
+        Color::White => (base + 7).to_string(),
+        Color::DarkGray => {
+            if is_fg {
+                "90".to_string()
+            } else {
+                "100".to_string()
+            }
+        }
+        Color::LightRed => {
+            if is_fg {
+                "91".to_string()
+            } else {
+                "101".to_string()
+            }
+        }
+        Color::LightGreen => {
+            if is_fg {
+                "92".to_string()
+            } else {
+                "102".to_string()
+            }
+        }
+        Color::LightYellow => {
+            if is_fg {
+                "93".to_string()
+            } else {
+                "103".to_string()
+            }
+        }
+        Color::LightBlue => {
+            if is_fg {
+                "94".to_string()
+            } else {
+                "104".to_string()
+            }
+        }
+        Color::LightMagenta => {
+            if is_fg {
+                "95".to_string()
+            } else {
+                "105".to_string()
+            }
+        }
+        Color::LightCyan => {
+            if is_fg {
+                "96".to_string()
+            } else {
+                "106".to_string()
+            }
+        }
+        Color::Indexed(i) => {
+            if is_fg {
+                format!("38;5;{i}")
+            } else {
+                format!("48;5;{i}")
+            }
+        }
+        Color::Rgb(r, g, b) => {
+            if is_fg {
+                format!("38;2;{r};{g};{b}")
+            } else {
+                format!("48;2;{r};{g};{b}")
+            }
+        }
+        _ => return None,
+    })
 }
 
 /// Compute the cheatsheet bar height for a given terminal width.
@@ -576,6 +815,8 @@ struct TermLines {
     /// Cursor position as `(col, row)` relative to the pane's inner content area,
     /// or `None` when the cursor is hidden or scrolled off the visible viewport.
     cursor_pos: Option<(u16, u16)>,
+    /// Cells that carry OSC 8 hyperlinks, collected after all style transforms.
+    hyperlinks: Vec<HyperlinkCell>,
 }
 
 /// Convert the alacritty Term grid into ratatui Text for display.
@@ -609,6 +850,7 @@ fn term_to_lines(
 
     let mut lines: Vec<TuiLine<'static>> = Vec::with_capacity(rows);
     let mut has_visible_content = false;
+    let mut hyperlinks: Vec<HyperlinkCell> = Vec::new();
 
     for row in 0..rows {
         let mut spans: Vec<Span<'static>> = Vec::new();
@@ -650,6 +892,19 @@ fn term_to_lines(
                 style = style.fg(fg).bg(bg);
             }
 
+            // Collect hyperlink metadata after all style transforms so that the
+            // stored style matches what is actually rendered on screen.
+            if let Some(hyperlink) = cell.hyperlink() {
+                hyperlinks.push(HyperlinkCell {
+                    row: row as u16,
+                    col: col as u16,
+                    ch,
+                    style,
+                    uri: hyperlink.uri().to_owned(),
+                    id: hyperlink.id().to_owned(),
+                });
+            }
+
             if style == current_style {
                 current_text.push(ch);
             } else {
@@ -687,6 +942,7 @@ fn term_to_lines(
             None
         },
         cursor_pos,
+        hyperlinks,
     }
 }
 
