@@ -782,7 +782,15 @@ pub fn key_event_to_bytes(event: &crossterm::event::KeyEvent) -> Option<Vec<u8>>
                 }
             } else {
                 let mut buf = [0u8; 4];
-                c.encode_utf8(&mut buf).as_bytes().to_vec()
+                let char_bytes = c.encode_utf8(&mut buf).as_bytes().to_vec();
+                if mods.contains(KeyModifiers::ALT) {
+                    // Alt+char → ESC prefix (standard terminal encoding)
+                    let mut out = vec![0x1b];
+                    out.extend_from_slice(&char_bytes);
+                    out
+                } else {
+                    char_bytes
+                }
             }
         }
         KeyCode::Enter => vec![b'\r'],
@@ -1049,6 +1057,18 @@ mod tests {
     fn ctrl_non_alpha_returns_none() {
         let event = press(KeyCode::Char('1'), KeyModifiers::CONTROL);
         assert!(key_event_to_bytes(&event).is_none());
+    }
+
+    #[test]
+    fn alt_char_sends_esc_prefix() {
+        let event = press(KeyCode::Char('g'), KeyModifiers::ALT);
+        assert_eq!(key_event_to_bytes(&event), Some(vec![0x1b, b'g']));
+    }
+
+    #[test]
+    fn alt_unicode_char_sends_esc_prefix() {
+        let event = press(KeyCode::Char('é'), KeyModifiers::ALT);
+        assert_eq!(key_event_to_bytes(&event), Some(vec![0x1b, 0xC3, 0xA9]));
     }
 
     #[test]
