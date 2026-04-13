@@ -15,8 +15,9 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
+use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::sync::FairMutex;
-use alacritty_terminal::term::{Config as TermConfig, Term};
+use alacritty_terminal::term::{Config as TermConfig, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Processor, StdSyncHandler};
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
@@ -310,22 +311,77 @@ impl PaneState {
         self.title_version.load(Ordering::Relaxed)
     }
 
+    // ── Scrollback ────────────────────────────────────────────────────────────
+
+    /// Returns whether the terminal is currently in alternate-screen mode.
+    pub fn is_alt_screen(&self) -> bool {
+        self.term.lock().mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    /// Returns whether any mouse-event reporting mode is currently enabled.
+    pub fn is_mouse_mode(&self) -> bool {
+        self.term.lock().mode().contains(TermMode::MOUSE_MODE)
+    }
+
+    /// Returns whether SGR mouse encoding (`\x1b[<…M`) is enabled.
+    pub fn is_sgr_mouse(&self) -> bool {
+        self.term.lock().mode().contains(TermMode::SGR_MOUSE)
+    }
+
+    /// Returns whether alternate-scroll mode is enabled and in alt screen.
+    ///
+    /// When true, mouse wheel events should be translated to cursor-key sequences
+    /// rather than scrolling the scrollback buffer.
+    pub fn is_alternate_scroll(&self) -> bool {
+        let mode = *self.term.lock().mode();
+        mode.contains(TermMode::ALT_SCREEN) && mode.contains(TermMode::ALTERNATE_SCROLL)
+    }
+
+    /// Current scrollback display offset (0 = at the bottom / most recent output).
+    pub fn display_offset(&self) -> usize {
+        self.term.lock().renderable_content().display_offset
+    }
+
+    /// Scroll the viewport up by one page towards history.
+    pub fn scroll_page_up(&mut self) {
+        self.term.lock().scroll_display(Scroll::PageUp);
+        self.content_version.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Scroll the viewport down by one page towards the most recent output.
+    pub fn scroll_page_down(&mut self) {
+        self.term.lock().scroll_display(Scroll::PageDown);
+        self.content_version.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Scroll the viewport by `lines` lines (positive = up, negative = down).
+    pub fn scroll_by_lines(&mut self, lines: i32) {
+        self.term.lock().scroll_display(Scroll::Delta(lines));
+        self.content_version.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Snap the viewport to the most recent output (display_offset → 0).
+    pub fn scroll_to_bottom(&mut self) {
+        self.term.lock().scroll_display(Scroll::Bottom);
+        self.content_version.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Extract text from the terminal grid between two pane-grid-local positions.
     /// Handles line wrapping: wrapped lines don't get a newline inserted.
     ///
     /// # Notes
     ///
-    /// `display_offset` is interpreted as a scrollback offset from the visible
-    /// viewport to preserve selection semantics while output is still arriving.
+    /// `display_offset` is the scrollback offset captured at selection start so
+    /// that copy-from-scrollback uses the correct grid rows even if the viewport
+    /// has since moved.
     pub fn extract_text(
         &self,
         start: (u16, u16),
         end: (u16, u16),
-        _display_offset: usize,
+        display_offset: usize,
     ) -> String {
         let term = self.term.lock();
-        let content = term.renderable_content();
-        let offset = content.display_offset as i32;
+        let offset = display_offset as i32;
 
         let (sc, sr) = start;
         let (ec, er) = end;

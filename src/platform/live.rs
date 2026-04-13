@@ -164,6 +164,42 @@ impl PaneBackend for PaneState {
     fn selected_text(&self, start: (u16, u16), end: (u16, u16), display_offset: usize) -> String {
         PaneState::extract_text(self, start, end, display_offset)
     }
+
+    fn is_alt_screen(&self) -> bool {
+        PaneState::is_alt_screen(self)
+    }
+
+    fn is_mouse_mode(&self) -> bool {
+        PaneState::is_mouse_mode(self)
+    }
+
+    fn is_sgr_mouse(&self) -> bool {
+        PaneState::is_sgr_mouse(self)
+    }
+
+    fn is_alternate_scroll(&self) -> bool {
+        PaneState::is_alternate_scroll(self)
+    }
+
+    fn display_offset(&self) -> usize {
+        PaneState::display_offset(self)
+    }
+
+    fn scroll_page_up(&mut self) {
+        PaneState::scroll_page_up(self)
+    }
+
+    fn scroll_page_down(&mut self) {
+        PaneState::scroll_page_down(self)
+    }
+
+    fn scroll_by_lines(&mut self, lines: i32) {
+        PaneState::scroll_by_lines(self, lines)
+    }
+
+    fn scroll_to_bottom(&mut self) {
+        PaneState::scroll_to_bottom(self)
+    }
 }
 
 // ── LivePaneFactory ──────────────────────────────────────────────────────────

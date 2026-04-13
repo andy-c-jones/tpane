@@ -71,6 +71,16 @@ pub struct HeadlessPaneBackend {
     pub input_log: Vec<Vec<u8>>,
     /// History of resize calls performed by the app.
     pub resize_log: Vec<(u16, u16)>,
+    /// Simulated alternate-screen state (false by default).
+    pub alt_screen: bool,
+    /// Simulated mouse-mode state (false by default).
+    pub mouse_mode: bool,
+    /// Simulated SGR-mouse state (false by default).
+    pub sgr_mouse: bool,
+    /// Simulated alternate-scroll state (false by default).
+    pub alternate_scroll: bool,
+    /// Current scrollback offset (0 = at bottom).
+    pub scroll_offset: i32,
 }
 
 impl HeadlessPaneBackend {
@@ -87,6 +97,11 @@ impl HeadlessPaneBackend {
             rows,
             input_log: Vec::new(),
             resize_log: Vec::new(),
+            alt_screen: false,
+            mouse_mode: false,
+            sgr_mouse: false,
+            alternate_scroll: false,
+            scroll_offset: 0,
         }
     }
 }
@@ -101,6 +116,42 @@ impl PaneBackend for HeadlessPaneBackend {
         self.cols = cols;
         self.rows = rows;
         self.resize_log.push((cols, rows));
+    }
+
+    fn is_alt_screen(&self) -> bool {
+        self.alt_screen
+    }
+
+    fn is_mouse_mode(&self) -> bool {
+        self.mouse_mode
+    }
+
+    fn is_sgr_mouse(&self) -> bool {
+        self.sgr_mouse
+    }
+
+    fn is_alternate_scroll(&self) -> bool {
+        self.alternate_scroll
+    }
+
+    fn display_offset(&self) -> usize {
+        self.scroll_offset.max(0) as usize
+    }
+
+    fn scroll_page_up(&mut self) {
+        self.scroll_offset += 10;
+    }
+
+    fn scroll_page_down(&mut self) {
+        self.scroll_offset = (self.scroll_offset - 10).max(0);
+    }
+
+    fn scroll_by_lines(&mut self, lines: i32) {
+        self.scroll_offset = (self.scroll_offset + lines).max(0);
+    }
+
+    fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = 0;
     }
 }
 

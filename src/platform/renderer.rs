@@ -881,6 +881,36 @@ fn f_key_bytes(n: u8) -> Vec<u8> {
     }
 }
 
+/// Encode a mouse scroll event as bytes to write to the PTY.
+///
+/// # Behavior
+///
+/// When `sgr` is `true`, uses SGR mouse encoding (`\x1b[<btn;col;rowM`).
+/// Otherwise falls back to X10 encoding when coordinates are within the
+/// representable range (≤ 222), and returns empty bytes for out-of-range coords.
+///
+/// `col` and `row` are zero-indexed pane-content-local coordinates.
+pub fn encode_mouse_scroll(col: u16, row: u16, up: bool, sgr: bool) -> Vec<u8> {
+    let button: u16 = if up { 64 } else { 65 };
+    if sgr {
+        format!("\x1b[<{button};{};{}M", col + 1, row + 1).into_bytes()
+    } else {
+        // X10/normal encoding: each value is offset by 32; valid up to char 255.
+        // Coordinates above 222 would overflow a single byte — skip them.
+        if col > 222 || row > 222 {
+            return Vec::new();
+        }
+        vec![
+            b'\x1b',
+            b'[',
+            b'M',
+            (button as u8) + 32,
+            col as u8 + 33,
+            row as u8 + 33,
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,6 +1225,35 @@ mod tests {
         assert_eq!(
             ansi_color_to_ratatui(AColor::Named(NamedColor::Foreground)),
             None
+        );
+    }
+
+    #[test]
+    fn encode_mouse_scroll_sgr_up() {
+        // Button 64 = scroll up; col/row are 0-indexed, SGR is 1-indexed.
+        let bytes = encode_mouse_scroll(3, 5, true, true);
+        assert_eq!(bytes, b"\x1b[<64;4;6M");
+    }
+
+    #[test]
+    fn encode_mouse_scroll_sgr_down() {
+        let bytes = encode_mouse_scroll(0, 0, false, true);
+        assert_eq!(bytes, b"\x1b[<65;1;1M");
+    }
+
+    #[test]
+    fn encode_mouse_scroll_x10_up_in_range() {
+        // X10: button+32, col+33, row+33
+        let bytes = encode_mouse_scroll(0, 0, true, false);
+        assert_eq!(bytes, vec![0x1b, b'[', b'M', 64 + 32, 33, 33]);
+    }
+
+    #[test]
+    fn encode_mouse_scroll_x10_out_of_range_returns_empty() {
+        let bytes = encode_mouse_scroll(223, 0, true, false);
+        assert!(
+            bytes.is_empty(),
+            "coords > 222 must return empty in X10 mode"
         );
     }
 }

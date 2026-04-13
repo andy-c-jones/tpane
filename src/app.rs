@@ -22,7 +22,7 @@ use crate::core::layout::{
     Direction, DividerInfo, Layout, Orientation, PaneId, SplitHandle, SplitPosition,
 };
 use crate::core::selection::Selection;
-use crate::platform::renderer::{cheatsheet_bar_height, key_event_to_bytes};
+use crate::platform::renderer::{cheatsheet_bar_height, encode_mouse_scroll, key_event_to_bytes};
 use crate::traits::{AppEvent, Clipboard, EventSource, PaneBackend, PaneFactory, Renderer};
 
 /// How much the ratio changes per resize step (approx 2% of total size).
@@ -210,9 +210,26 @@ impl<B: PaneBackend> App<B> {
             return Ok(true);
         }
 
-        // Forward raw bytes to the active pane.
+        // PageUp / PageDown: scroll terminal buffer when not in alt-screen mode.
+        // In alt-screen (TUI apps), forward the key to the PTY as usual.
+        if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+            if let Some(pane) = self.panes.get_mut(&self.layout.active) {
+                if !pane.is_alt_screen() {
+                    if key.code == KeyCode::PageUp {
+                        pane.scroll_page_up();
+                    } else {
+                        pane.scroll_page_down();
+                    }
+                    return Ok(true);
+                }
+            }
+        }
+
+        // Forward raw bytes to the active pane; snap scrollback to bottom first
+        // so the user always sees the current output after typing.
         if let Some(bytes) = key_event_to_bytes(&key) {
             if let Some(pane) = self.panes.get_mut(&self.layout.active) {
+                pane.scroll_to_bottom();
                 pane.write_input(&bytes)?;
             }
             return Ok(false);
@@ -233,9 +250,25 @@ impl<B: PaneBackend> App<B> {
             return Ok(true);
         }
 
+        // PageUp / PageDown held: keep scrolling the buffer when not in alt-screen.
+        if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+            if let Some(pane) = self.panes.get_mut(&self.layout.active) {
+                if !pane.is_alt_screen() {
+                    if key.code == KeyCode::PageUp {
+                        pane.scroll_page_up();
+                    } else {
+                        pane.scroll_page_down();
+                    }
+                    return Ok(true);
+                }
+            }
+        }
+
         // Forward raw bytes to the active pane (e.g. holding a character key).
+        // Snap to bottom so the pane follows new output while held keys are in flight.
         if let Some(bytes) = key_event_to_bytes(&key) {
             if let Some(pane) = self.panes.get_mut(&self.layout.active) {
+                pane.scroll_to_bottom();
                 pane.write_input(&bytes)?;
             }
             return Ok(false);
@@ -574,12 +607,19 @@ impl<B: PaneBackend> App<B> {
                     {
                         let col = mouse.column - inner_x;
                         let row = mouse.row - inner_y;
+                        // Capture the current scrollback offset so selection coordinates
+                        // are correct even if the viewport moves before copy is invoked.
+                        let display_offset = self
+                            .panes
+                            .get(&pane_id)
+                            .map(|p| p.display_offset())
+                            .unwrap_or(0);
                         self.drag_origin = Some((mouse.column, mouse.row));
                         self.selection = Some(Selection {
                             pane_id,
                             start: (col, row),
                             end: (col, row),
-                            display_offset: 0,
+                            display_offset,
                         });
                     }
                 }
@@ -651,6 +691,36 @@ impl<B: PaneBackend> App<B> {
                         .map(|(id, _)| id)
                         .unwrap_or(self.layout.active);
                     let _ = self.paste_clipboard_to(target, clipboard);
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let up = mouse.kind == MouseEventKind::ScrollUp;
+                let rects = self.layout.compute_rects(w, pane_area_h);
+                if let Some((pane_id, rect)) = Self::find_pane_at(&rects, mouse.column, mouse.row) {
+                    self.layout.set_active(pane_id);
+                    if let Some(pane) = self.panes.get_mut(&pane_id) {
+                        if pane.is_mouse_mode() {
+                            // Forward as a mouse event so TUI applications (e.g. bubbletea)
+                            // can handle scrolling themselves.
+                            let col = mouse.column.saturating_sub(rect.x + 1);
+                            let row = mouse.row.saturating_sub(rect.y + 1);
+                            let bytes = encode_mouse_scroll(col, row, up, pane.is_sgr_mouse());
+                            if !bytes.is_empty() {
+                                let _ = pane.write_input(&bytes);
+                            }
+                        } else if pane.is_alternate_scroll() {
+                            // Alt-screen + alternate-scroll: translate wheel to arrow keys.
+                            // Many terminal apps (less, man, etc.) use this.
+                            let arrow = if up { b"\x1b[A" as &[u8] } else { b"\x1b[B" };
+                            for _ in 0..3 {
+                                let _ = pane.write_input(arrow);
+                            }
+                        } else {
+                            // Main screen (e.g. fish shell): scroll the terminal buffer.
+                            let lines: i32 = if up { 3 } else { -3 };
+                            pane.scroll_by_lines(lines);
+                        }
+                    }
                 }
             }
             _ => {}

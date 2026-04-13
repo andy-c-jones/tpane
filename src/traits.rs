@@ -67,6 +67,57 @@ pub trait PaneBackend: Send {
     ) -> String {
         String::new()
     }
+
+    // ── Scrollback ────────────────────────────────────────────────────────────
+
+    /// Returns whether the pane's terminal is in alternate-screen mode.
+    ///
+    /// Full-screen TUI applications (e.g. bubbletea apps) use the alternate
+    /// screen; normal shell sessions stay on the main (primary) screen.
+    fn is_alt_screen(&self) -> bool {
+        false
+    }
+
+    /// Returns whether the pane's terminal has any mouse-event reporting mode
+    /// enabled (click, drag, or motion tracking).
+    fn is_mouse_mode(&self) -> bool {
+        false
+    }
+
+    /// Returns whether the pane's terminal uses SGR (`\x1b[<…M`) mouse
+    /// encoding instead of the legacy X10 format.
+    fn is_sgr_mouse(&self) -> bool {
+        false
+    }
+
+    /// Returns whether the pane's terminal has alternate-scroll mode enabled.
+    ///
+    /// When this is active and the terminal is in alternate-screen mode, mouse
+    /// wheel events should be translated to cursor-up/down key sequences rather
+    /// than scrolling the scrollback buffer.
+    fn is_alternate_scroll(&self) -> bool {
+        false
+    }
+
+    /// Returns the current scrollback display offset (0 = at the bottom).
+    fn display_offset(&self) -> usize {
+        0
+    }
+
+    /// Scroll the terminal's viewport up by one page (towards history).
+    fn scroll_page_up(&mut self) {}
+
+    /// Scroll the terminal's viewport down by one page (towards present).
+    fn scroll_page_down(&mut self) {}
+
+    /// Scroll the terminal's viewport by `lines` lines.
+    ///
+    /// Positive values scroll up (towards history); negative values scroll
+    /// down (towards the most recent output).
+    fn scroll_by_lines(&mut self, _lines: i32) {}
+
+    /// Snap the terminal's viewport to the most recent output.
+    fn scroll_to_bottom(&mut self) {}
 }
 
 /// Factory for creating pane backends.
