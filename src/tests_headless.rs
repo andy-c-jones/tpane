@@ -1573,4 +1573,207 @@ mod tests {
         app.apply_startup_commands(&cmds, &factory).unwrap();
         assert!(!app.is_running());
     }
+
+    // ── scrollback ────────────────────────────────────────────────────────────
+
+    fn mouse_scroll_up(col: u16, row: u16) -> AppEvent {
+        AppEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: col,
+            row,
+            modifiers: KeyModifiers::empty(),
+        })
+    }
+
+    fn mouse_scroll_down(col: u16, row: u16) -> AppEvent {
+        AppEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: col,
+            row,
+            modifiers: KeyModifiers::empty(),
+        })
+    }
+
+    #[test]
+    fn page_up_scrolls_buffer_when_not_in_alt_screen() {
+        let (mut app, factory, mut clip) = default_app();
+        let active = app.active_pane();
+        // Not in alt-screen (default), so PageUp should scroll the buffer.
+        app.process_event(
+            key_press(KeyCode::PageUp, KeyModifiers::empty()),
+            &factory,
+            &mut clip,
+        )
+        .unwrap();
+        assert!(
+            app.panes[&active].scroll_offset > 0,
+            "expected scroll_offset > 0 after PageUp"
+        );
+        assert!(
+            app.panes[&active].input_log.is_empty(),
+            "PageUp must not be forwarded to PTY"
+        );
+    }
+
+    #[test]
+    fn page_down_scrolls_buffer_down_when_not_in_alt_screen() {
+        let (mut app, factory, mut clip) = default_app();
+        let active = app.active_pane();
+        // Scroll up first, then page down.
+        app.panes.get_mut(&active).unwrap().scroll_offset = 20;
+        app.process_event(
+            key_press(KeyCode::PageDown, KeyModifiers::empty()),
+            &factory,
+            &mut clip,
+        )
+        .unwrap();
+        assert!(
+            app.panes[&active].scroll_offset < 20,
+            "scroll_offset should decrease after PageDown"
+        );
+        assert!(
+            app.panes[&active].input_log.is_empty(),
+            "PageDown must not be forwarded to PTY"
+        );
+    }
+
+    #[test]
+    fn page_up_forwarded_to_pty_in_alt_screen() {
+        let (mut app, factory, mut clip) = default_app();
+        let active = app.active_pane();
+        // Simulate alt-screen (e.g. a TUI app is running).
+        app.panes.get_mut(&active).unwrap().alt_screen = true;
+        app.process_event(
+            key_press(KeyCode::PageUp, KeyModifiers::empty()),
+            &factory,
+            &mut clip,
+        )
+        .unwrap();
+        // Should be forwarded as raw bytes (\x1b[5~), not handled as scrollback.
+        assert_eq!(
+            app.panes[&active].scroll_offset, 0,
+            "scroll_offset must not change in alt-screen"
+        );
+        assert!(
+            !app.panes[&active].input_log.is_empty(),
+            "PageUp must be forwarded in alt-screen"
+        );
+        assert_eq!(app.panes[&active].input_log[0], b"\x1b[5~");
+    }
+
+    #[test]
+    fn page_up_repeat_scrolls_buffer_when_not_in_alt_screen() {
+        let (mut app, factory, mut clip) = default_app();
+        let active = app.active_pane();
+        // Repeat events should also scroll the buffer (holding PageUp).
+        app.process_event(
+            key_repeat(KeyCode::PageUp, KeyModifiers::empty()),
+            &factory,
+            &mut clip,
+        )
+        .unwrap();
+        assert!(app.panes[&active].scroll_offset > 0);
+        assert!(app.panes[&active].input_log.is_empty());
+    }
+
+    #[test]
+    fn regular_key_press_snaps_scrollback_to_bottom() {
+        let (mut app, factory, mut clip) = default_app();
+        let active = app.active_pane();
+        // Simulate being scrolled up.
+        app.panes.get_mut(&active).unwrap().scroll_offset = 15;
+        // Any regular key should snap to bottom before forwarding.
+        app.process_event(
+            key_press(KeyCode::Char('a'), KeyModifiers::empty()),
+            &factory,
+            &mut clip,
+        )
+        .unwrap();
+        assert_eq!(
+            app.panes[&active].scroll_offset, 0,
+            "key press should snap scrollback to bottom"
+        );
+        assert!(!app.panes[&active].input_log.is_empty());
+    }
+
+    #[test]
+    fn mouse_scroll_up_scrolls_buffer_in_normal_mode() {
+        let (mut app, factory, mut clip) = default_app();
+        let active = app.active_pane();
+        // No mouse mode, not alt-screen: wheel should scroll the buffer.
+        app.process_event(mouse_scroll_up(5, 5), &factory, &mut clip)
+            .unwrap();
+        assert!(app.panes[&active].scroll_offset > 0);
+        assert!(
+            app.panes[&active].input_log.is_empty(),
+            "scroll events must not be forwarded in normal mode"
+        );
+    }
+
+    #[test]
+    fn mouse_scroll_down_decreases_offset_in_normal_mode() {
+        let (mut app, factory, mut clip) = default_app();
+        let active = app.active_pane();
+        app.panes.get_mut(&active).unwrap().scroll_offset = 10;
+        app.process_event(mouse_scroll_down(5, 5), &factory, &mut clip)
+            .unwrap();
+        assert!(app.panes[&active].scroll_offset < 10);
+        assert!(app.panes[&active].input_log.is_empty());
+    }
+
+    #[test]
+    fn mouse_scroll_forwarded_as_sgr_mouse_event_when_mouse_mode_enabled() {
+        let (mut app, factory, mut clip) = default_app();
+        let active = app.active_pane();
+        app.panes.get_mut(&active).unwrap().mouse_mode = true;
+        app.panes.get_mut(&active).unwrap().sgr_mouse = true;
+        // Scroll inside the pane content area (inner starts at 1,1).
+        app.process_event(mouse_scroll_up(5, 5), &factory, &mut clip)
+            .unwrap();
+        assert_eq!(
+            app.panes[&active].scroll_offset, 0,
+            "no buffer scroll when mouse mode active"
+        );
+        assert!(
+            !app.panes[&active].input_log.is_empty(),
+            "scroll must be forwarded as mouse event"
+        );
+        // Verify SGR encoding: \x1b[<64;col+1;row+1M
+        let bytes = &app.panes[&active].input_log[0];
+        assert!(bytes.starts_with(b"\x1b[<"), "expected SGR mouse encoding");
+    }
+
+    #[test]
+    fn mouse_scroll_sends_arrow_keys_in_alternate_scroll_mode() {
+        let (mut app, factory, mut clip) = default_app();
+        let active = app.active_pane();
+        // alt-screen + alternate_scroll, no mouse_mode → send arrow keys
+        app.panes.get_mut(&active).unwrap().alternate_scroll = true;
+        app.process_event(mouse_scroll_up(5, 5), &factory, &mut clip)
+            .unwrap();
+        assert_eq!(app.panes[&active].scroll_offset, 0);
+        // Should have written 3 up-arrow sequences.
+        let total: usize = app.panes[&active].input_log.iter().map(|b| b.len()).sum();
+        assert!(total > 0, "expected arrow key bytes written");
+        assert!(
+            app.panes[&active].input_log.iter().all(|b| b == b"\x1b[A"),
+            "expected cursor-up arrow sequences"
+        );
+    }
+
+    #[test]
+    fn selection_captures_display_offset_at_start() {
+        let (mut app, factory, mut clip) = default_app();
+        let active = app.active_pane();
+        // Simulate scrolled state.
+        app.panes.get_mut(&active).unwrap().scroll_offset = 7;
+        // Start a drag (selection start).
+        app.process_event(mouse_click(5, 5), &factory, &mut clip)
+            .unwrap();
+        let sel = app.selection.as_ref().expect("expected selection to start");
+        assert_eq!(
+            sel.display_offset, 7,
+            "selection must capture display_offset at drag start"
+        );
+    }
 }
