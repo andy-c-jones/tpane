@@ -118,6 +118,17 @@ pub trait PaneBackend: Send {
 
     /// Snap the terminal's viewport to the most recent output.
     fn scroll_to_bottom(&mut self) {}
+
+    // ── Hyperlink ─────────────────────────────────────────────────────────────
+
+    /// Return the URI of the OSC 8 hyperlink at the given cell, if any.
+    ///
+    /// `col` and `row` are pane-viewport-local (0-based, inside the border).
+    /// The implementation should account for the current `display_offset` so
+    /// that scrolled-back views return the correct link.
+    fn hyperlink_at(&self, _col: u16, _row: u16) -> Option<String> {
+        None
+    }
 }
 
 /// Factory for creating pane backends.

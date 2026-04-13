@@ -366,6 +366,17 @@ impl PaneState {
         self.content_version.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Return the URI of the OSC 8 hyperlink at the given viewport cell, if any.
+    pub fn hyperlink_at(&self, col: u16, row: u16) -> Option<String> {
+        let term = self.term.lock();
+        let display_offset = term.renderable_content().display_offset as i32;
+        let point = alacritty_terminal::index::Point::new(
+            alacritty_terminal::index::Line(row as i32 - display_offset),
+            alacritty_terminal::index::Column(col as usize),
+        );
+        term.grid()[point].hyperlink().map(|h| h.uri().to_owned())
+    }
+
     /// Extract text from the terminal grid between two pane-grid-local positions.
     /// Handles line wrapping: wrapped lines don't get a newline inserted.
     ///

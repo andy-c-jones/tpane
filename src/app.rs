@@ -22,7 +22,9 @@ use crate::core::layout::{
     Direction, DividerInfo, Layout, Orientation, PaneId, SplitHandle, SplitPosition,
 };
 use crate::core::selection::Selection;
-use crate::platform::renderer::{cheatsheet_bar_height, encode_mouse_scroll, key_event_to_bytes};
+use crate::platform::renderer::{
+    cheatsheet_bar_height, encode_mouse_scroll, key_event_to_bytes, open_url,
+};
 use crate::traits::{AppEvent, Clipboard, EventSource, PaneBackend, PaneFactory, Renderer};
 
 /// How much the ratio changes per resize step (approx 2% of total size).
@@ -565,6 +567,37 @@ impl<B: PaneBackend> App<B> {
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                // Ctrl+click: open OSC 8 hyperlink at the clicked cell, if any.
+                // Must be checked before the selection resets below so we don't
+                // clear an existing selection on a misfire.
+                if mouse.modifiers.contains(KeyModifiers::CONTROL) {
+                    let rects = self.layout.compute_rects(w, pane_area_h);
+                    if let Some((pane_id, rect)) =
+                        Self::find_pane_at(&rects, mouse.column, mouse.row)
+                    {
+                        let inner_x = rect.x + 1;
+                        let inner_y = rect.y + 1;
+                        let inner_w = rect.width.saturating_sub(2);
+                        let inner_h = rect.height.saturating_sub(2);
+                        if mouse.column >= inner_x
+                            && mouse.column < inner_x + inner_w
+                            && mouse.row >= inner_y
+                            && mouse.row < inner_y + inner_h
+                        {
+                            let col = mouse.column - inner_x;
+                            let row = mouse.row - inner_y;
+                            if let Some(uri) = self
+                                .panes
+                                .get(&pane_id)
+                                .and_then(|p| p.hyperlink_at(col, row))
+                            {
+                                open_url(&uri);
+                                return;
+                            }
+                        }
+                    }
+                }
+
                 // Clear any previous selection.
                 self.selection = None;
                 self.dragging = false;

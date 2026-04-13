@@ -115,7 +115,49 @@ pub fn restore_terminal(tui: &mut Tui) -> Result<()> {
     Ok(())
 }
 
-/// Render the full tpane UI: one bordered block per pane, content from the Term grid.
+/// Open a URI using the platform's default handler.
+///
+/// Only `http` and `https` schemes are accepted; other schemes are silently
+/// ignored to avoid launching unexpected local-file or custom-protocol
+/// handlers from untrusted terminal output.
+///
+/// The child process's stdio is redirected to null so it cannot dirty the TUI.
+/// Failures are logged rather than surfaced to the caller.
+pub fn open_url(uri: &str) {
+    let scheme = uri.split("://").next().unwrap_or("");
+    if scheme != "http" && scheme != "https" {
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open")
+        .arg(uri)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("cmd")
+        .args(["/c", "start", "", uri])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let result = std::process::Command::new("xdg-open")
+        .arg(uri)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    if let Err(e) = result {
+        log::warn!("open_url: failed to open {:?}: {}", uri, e);
+    }
+}
+
 ///
 /// # Behavior
 ///

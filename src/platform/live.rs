@@ -200,6 +200,10 @@ impl PaneBackend for PaneState {
     fn scroll_to_bottom(&mut self) {
         PaneState::scroll_to_bottom(self)
     }
+
+    fn hyperlink_at(&self, col: u16, row: u16) -> Option<String> {
+        PaneState::hyperlink_at(self, col, row)
+    }
 }
 
 // ── LivePaneFactory ──────────────────────────────────────────────────────────
