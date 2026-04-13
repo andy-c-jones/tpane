@@ -9,6 +9,8 @@ use std::time::Instant;
 
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::Cell;
+use alacritty_terminal::term::point_to_viewport;
+use alacritty_terminal::vte::ansi::CursorShape;
 use anyhow::Result;
 use crossterm::event::KeyEventKind;
 use ratatui::backend::CrosstermBackend;
@@ -46,6 +48,8 @@ struct PaneRenderKey {
 struct PaneRenderCache {
     key: PaneRenderKey,
     content: Option<Vec<TuiLine<'static>>>,
+    /// Cursor position relative to the pane's inner content area, if visible.
+    cursor_pos: Option<(u16, u16)>,
 }
 
 /// Cache object reused across frames by the live renderer.
@@ -209,7 +213,8 @@ pub fn render(
                             *pane_id,
                             PaneRenderCache {
                                 key,
-                                content: built,
+                                content: built.lines,
+                                cursor_pos: built.cursor_pos,
                             },
                         );
                         cache
@@ -245,6 +250,15 @@ pub fn render(
                         height: 1,
                     };
                     frame.render_widget(para, center_rect);
+                }
+
+                // Position the hardware cursor inside the active pane.
+                if is_active {
+                    if let Some((col, row)) =
+                        cache.pane_content.get(pane_id).and_then(|c| c.cursor_pos)
+                    {
+                        frame.set_cursor_position((inner.x + col, inner.y + row));
+                    }
                 }
             }
         }
@@ -555,23 +569,43 @@ fn key_chord_to_display(chord: &KeyChord) -> String {
     parts.join("+")
 }
 
+/// Return value of [`term_to_lines`]: rendered content and optional cursor position.
+struct TermLines {
+    /// Rendered ratatui lines, or `None` when the pane has no visible content yet.
+    lines: Option<Vec<TuiLine<'static>>>,
+    /// Cursor position as `(col, row)` relative to the pane's inner content area,
+    /// or `None` when the cursor is hidden or scrolled off the visible viewport.
+    cursor_pos: Option<(u16, u16)>,
+}
+
 /// Convert the alacritty Term grid into ratatui Text for display.
 /// If `sel_range` is Some, cells within the selection are rendered with inverted colors.
 ///
 /// Reads cells directly from the grid by reference in a single pass — no
-/// intermediate snapshot allocation.
+/// intermediate snapshot allocation. The cursor position is computed in the
+/// same lock acquisition to avoid snapshot skew.
 fn term_to_lines(
     pane: &PaneState,
     width: u16,
     height: u16,
     sel_range: Option<((u16, u16), (u16, u16))>,
-) -> Option<Vec<TuiLine<'static>>> {
+) -> TermLines {
     let rows = height as usize;
     let cols = width as usize;
 
     let term = pane.term.lock();
     let content = term.renderable_content();
     let display_offset = content.display_offset as i32;
+
+    // When DECTCEM hides the hardware cursor (e.g. ink/readline apps), compute
+    // the cursor's viewport cell so we can paint a software block-cursor there.
+    let soft_cursor: Option<(usize, usize)> = if content.cursor.shape == CursorShape::Hidden {
+        point_to_viewport(content.display_offset, content.cursor.point)
+            .filter(|vp| vp.line < rows && vp.column.0 < cols)
+            .map(|vp| (vp.column.0, vp.line))
+    } else {
+        None
+    };
 
     let mut lines: Vec<TuiLine<'static>> = Vec::with_capacity(rows);
     let mut has_visible_content = false;
@@ -609,6 +643,13 @@ fn term_to_lines(
                 }
             }
 
+            // Software cursor: invert colors at cursor cell when DECTCEM is off.
+            if soft_cursor == Some((col, row)) {
+                let fg = style.bg.unwrap_or(Color::Black);
+                let bg = style.fg.unwrap_or(Color::White);
+                style = style.fg(fg).bg(bg);
+            }
+
             if style == current_style {
                 current_text.push(ch);
             } else {
@@ -628,12 +669,24 @@ fn term_to_lines(
         lines.push(TuiLine::from(spans));
     }
 
-    drop(term);
-
-    if has_visible_content {
-        Some(lines)
+    // Compute cursor position in the same snapshot to avoid skew.
+    let cursor_pos = if content.cursor.shape != CursorShape::Hidden {
+        point_to_viewport(content.display_offset, content.cursor.point)
+            .filter(|vp| vp.line < height as usize && vp.column.0 < width as usize)
+            .map(|vp| (vp.column.0 as u16, vp.line as u16))
     } else {
         None
+    };
+
+    drop(term);
+
+    TermLines {
+        lines: if has_visible_content {
+            Some(lines)
+        } else {
+            None
+        },
+        cursor_pos,
     }
 }
 
