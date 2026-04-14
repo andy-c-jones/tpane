@@ -8,6 +8,7 @@ mod tests {
     };
 
     use crate::app::App;
+    use crate::core::commands::{Command, LayoutAction};
     use crate::core::keymap::KeyMap;
     use crate::core::layout::PaneId;
     use crate::headless::*;
@@ -23,7 +24,14 @@ mod tests {
         HeadlessClipboard,
     ) {
         let factory = HeadlessPaneFactory;
-        let app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
+        let app = App::new(
+            KeyMap::default(),
+            TERM_SIZE,
+            true,
+            std::collections::HashMap::new(),
+            &factory,
+        )
+        .unwrap();
         (app, factory, HeadlessClipboard::new())
     }
 
@@ -674,7 +682,14 @@ mod tests {
     #[test]
     fn cheatsheet_shown_when_prefix_active_and_enabled() {
         let factory = HeadlessPaneFactory;
-        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
+        let mut app = App::new(
+            KeyMap::default(),
+            TERM_SIZE,
+            true,
+            std::collections::HashMap::new(),
+            &factory,
+        )
+        .unwrap();
         let mut renderer = HeadlessRenderer::new();
         let mut clip = HeadlessClipboard::new();
         app.process_event(
@@ -701,7 +716,14 @@ mod tests {
     #[test]
     fn cheatsheet_hidden_when_disabled() {
         let factory = HeadlessPaneFactory;
-        let mut app = App::new(KeyMap::default(), TERM_SIZE, false, &factory).unwrap();
+        let mut app = App::new(
+            KeyMap::default(),
+            TERM_SIZE,
+            false,
+            std::collections::HashMap::new(),
+            &factory,
+        )
+        .unwrap();
         let mut renderer = HeadlessRenderer::new();
         let mut clip = HeadlessClipboard::new();
         app.process_event(
@@ -1451,14 +1473,24 @@ mod tests {
         assert_eq!(after_second_drag_same_cell, after_first_drag);
     }
 
-    // ── apply_startup_commands with ratio ────────────────────────────────────
+    // ── apply_layout with ratio ───────────────────────────────────────────────
 
     #[test]
     fn startup_split_right_default_ratio_produces_equal_panes() {
         let factory = HeadlessPaneFactory;
-        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
-        let cmds = vec![(crate::core::commands::Command::SplitRight, None)];
-        app.apply_startup_commands(&cmds, &factory).unwrap();
+        let mut app = App::new(
+            KeyMap::default(),
+            TERM_SIZE,
+            true,
+            std::collections::HashMap::new(),
+            &factory,
+        )
+        .unwrap();
+        let cmds = vec![LayoutAction::Split {
+            cmd: Command::SplitRight,
+            ratio: None,
+        }];
+        app.apply_layout(&cmds, &factory).unwrap();
 
         let (w, h) = TERM_SIZE;
         let ids = app.layout.leaf_ids();
@@ -1476,10 +1508,19 @@ mod tests {
     #[test]
     fn startup_split_right_with_ratio_gives_correct_proportions() {
         let factory = HeadlessPaneFactory;
-        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
-        // ratio=0.7 means the existing (left) pane keeps 70%
-        let cmds = vec![(crate::core::commands::Command::SplitRight, Some(0.7))];
-        app.apply_startup_commands(&cmds, &factory).unwrap();
+        let mut app = App::new(
+            KeyMap::default(),
+            TERM_SIZE,
+            true,
+            std::collections::HashMap::new(),
+            &factory,
+        )
+        .unwrap();
+        let cmds = vec![LayoutAction::Split {
+            cmd: Command::SplitRight,
+            ratio: Some(0.7),
+        }];
+        app.apply_layout(&cmds, &factory).unwrap();
 
         let (w, h) = TERM_SIZE;
         let ids = app.layout.leaf_ids();
@@ -1495,10 +1536,19 @@ mod tests {
     #[test]
     fn startup_split_down_with_ratio_gives_correct_proportions() {
         let factory = HeadlessPaneFactory;
-        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
-        // ratio=0.3 means the existing (top) pane keeps 30%
-        let cmds = vec![(crate::core::commands::Command::SplitDown, Some(0.3))];
-        app.apply_startup_commands(&cmds, &factory).unwrap();
+        let mut app = App::new(
+            KeyMap::default(),
+            TERM_SIZE,
+            true,
+            std::collections::HashMap::new(),
+            &factory,
+        )
+        .unwrap();
+        let cmds = vec![LayoutAction::Split {
+            cmd: Command::SplitDown,
+            ratio: Some(0.3),
+        }];
+        app.apply_layout(&cmds, &factory).unwrap();
 
         let (w, h) = TERM_SIZE;
         let ids = app.layout.leaf_ids();
@@ -1512,10 +1562,19 @@ mod tests {
     #[test]
     fn startup_split_left_with_ratio_keeps_original_pane_size() {
         let factory = HeadlessPaneFactory;
-        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
-        // split_left(0.7): original pane keeps 70% (becomes right child), new left pane gets 30%
-        let cmds = vec![(crate::core::commands::Command::SplitLeft, Some(0.7))];
-        app.apply_startup_commands(&cmds, &factory).unwrap();
+        let mut app = App::new(
+            KeyMap::default(),
+            TERM_SIZE,
+            true,
+            std::collections::HashMap::new(),
+            &factory,
+        )
+        .unwrap();
+        let cmds = vec![LayoutAction::Split {
+            cmd: Command::SplitLeft,
+            ratio: Some(0.7),
+        }];
+        app.apply_layout(&cmds, &factory).unwrap();
 
         let (w, h) = TERM_SIZE;
         let ids = app.layout.leaf_ids();
@@ -1529,33 +1588,69 @@ mod tests {
     #[test]
     fn startup_commands_create_correct_pane_count() {
         let factory = HeadlessPaneFactory;
-        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
+        let mut app = App::new(
+            KeyMap::default(),
+            TERM_SIZE,
+            true,
+            std::collections::HashMap::new(),
+            &factory,
+        )
+        .unwrap();
         let cmds = vec![
-            (crate::core::commands::Command::SplitRight, Some(0.6)),
-            (crate::core::commands::Command::SplitDown, None),
+            LayoutAction::Split {
+                cmd: Command::SplitRight,
+                ratio: Some(0.6),
+            },
+            LayoutAction::Split {
+                cmd: Command::SplitDown,
+                ratio: None,
+            },
         ];
-        app.apply_startup_commands(&cmds, &factory).unwrap();
+        app.apply_layout(&cmds, &factory).unwrap();
         assert_eq!(app.pane_count(), 3);
     }
 
     #[test]
     fn startup_split_vertical_and_horizontal_create_two_axes() {
         let factory = HeadlessPaneFactory;
-        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
+        let mut app = App::new(
+            KeyMap::default(),
+            TERM_SIZE,
+            true,
+            std::collections::HashMap::new(),
+            &factory,
+        )
+        .unwrap();
         let cmds = vec![
-            (crate::core::commands::Command::SplitVertical, None),
-            (crate::core::commands::Command::SplitHorizontal, None),
+            LayoutAction::Split {
+                cmd: Command::SplitVertical,
+                ratio: None,
+            },
+            LayoutAction::Split {
+                cmd: Command::SplitHorizontal,
+                ratio: None,
+            },
         ];
-        app.apply_startup_commands(&cmds, &factory).unwrap();
+        app.apply_layout(&cmds, &factory).unwrap();
         assert_eq!(app.pane_count(), 3);
     }
 
     #[test]
     fn startup_split_up_creates_upper_pane() {
         let factory = HeadlessPaneFactory;
-        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
-        let cmds = vec![(crate::core::commands::Command::SplitUp, Some(0.6))];
-        app.apply_startup_commands(&cmds, &factory).unwrap();
+        let mut app = App::new(
+            KeyMap::default(),
+            TERM_SIZE,
+            true,
+            std::collections::HashMap::new(),
+            &factory,
+        )
+        .unwrap();
+        let cmds = vec![LayoutAction::Split {
+            cmd: Command::SplitUp,
+            ratio: Some(0.6),
+        }];
+        app.apply_layout(&cmds, &factory).unwrap();
 
         let (w, h) = TERM_SIZE;
         let ids = app.layout.leaf_ids();
@@ -1568,10 +1663,141 @@ mod tests {
     #[test]
     fn startup_non_split_command_is_dispatched() {
         let factory = HeadlessPaneFactory;
-        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, &factory).unwrap();
-        let cmds = vec![(crate::core::commands::Command::Quit, None)];
-        app.apply_startup_commands(&cmds, &factory).unwrap();
+        let mut app = App::new(
+            KeyMap::default(),
+            TERM_SIZE,
+            true,
+            std::collections::HashMap::new(),
+            &factory,
+        )
+        .unwrap();
+        let cmds = vec![LayoutAction::Split {
+            cmd: Command::Quit,
+            ratio: None,
+        }];
+        app.apply_layout(&cmds, &factory).unwrap();
         assert!(!app.is_running());
+    }
+
+    // ── RunInPane ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn run_in_pane_writes_command_to_active_pane() {
+        let factory = HeadlessPaneFactory;
+        let mut app = App::new(
+            KeyMap::default(),
+            TERM_SIZE,
+            true,
+            std::collections::HashMap::new(),
+            &factory,
+        )
+        .unwrap();
+        let cmds = vec![LayoutAction::RunInPane("nvim .".to_string())];
+        app.apply_layout(&cmds, &factory).unwrap();
+        let active = app.layout.active;
+        let pane = &app.panes[&active];
+        assert_eq!(pane.input_log.last().unwrap(), b"nvim .\n");
+    }
+
+    #[test]
+    fn run_in_pane_targets_active_pane_after_split() {
+        let factory = HeadlessPaneFactory;
+        let mut app = App::new(
+            KeyMap::default(),
+            TERM_SIZE,
+            true,
+            std::collections::HashMap::new(),
+            &factory,
+        )
+        .unwrap();
+        let initial_pane = app.layout.active;
+        let cmds = vec![
+            LayoutAction::RunInPane("nvim .".to_string()),
+            LayoutAction::Split {
+                cmd: Command::SplitRight,
+                ratio: Some(0.6),
+            },
+            LayoutAction::RunInPane("lazygit".to_string()),
+        ];
+        app.apply_layout(&cmds, &factory).unwrap();
+        // Initial pane (left) should have received "nvim ."
+        assert_eq!(
+            app.panes[&initial_pane].input_log.last().unwrap(),
+            b"nvim .\n"
+        );
+        // Active pane (right, new) should have received "lazygit"
+        let active = app.layout.active;
+        assert_ne!(active, initial_pane);
+        assert_eq!(app.panes[&active].input_log.last().unwrap(), b"lazygit\n");
+    }
+
+    // ── LoadLayout / reset_and_apply_layout ──────────────────────────────────
+
+    #[test]
+    fn load_layout_resets_and_applies_named_layout() {
+        let factory = HeadlessPaneFactory;
+        let layout1 = vec![
+            LayoutAction::Split {
+                cmd: Command::SplitRight,
+                ratio: None,
+            },
+            LayoutAction::Split {
+                cmd: Command::SplitDown,
+                ratio: None,
+            },
+        ];
+        let mut named = std::collections::HashMap::new();
+        named.insert(1u8, layout1);
+        let mut app = App::new(KeyMap::default(), TERM_SIZE, true, named, &factory).unwrap();
+        // Start with a single pane, then load layout 1.
+        assert_eq!(app.pane_count(), 1);
+        app.reset_and_apply_layout(
+            &[
+                LayoutAction::Split {
+                    cmd: Command::SplitRight,
+                    ratio: None,
+                },
+                LayoutAction::Split {
+                    cmd: Command::SplitDown,
+                    ratio: None,
+                },
+            ],
+            &factory,
+        )
+        .unwrap();
+        assert_eq!(app.pane_count(), 3);
+    }
+
+    #[test]
+    fn load_layout_uses_monotonic_pane_ids_for_stale_event_safety() {
+        let factory = HeadlessPaneFactory;
+        let mut app = App::new(
+            KeyMap::default(),
+            TERM_SIZE,
+            true,
+            std::collections::HashMap::new(),
+            &factory,
+        )
+        .unwrap();
+        // Do a split so next_id is at least 2.
+        app.apply_layout(
+            &[LayoutAction::Split {
+                cmd: Command::SplitRight,
+                ratio: None,
+            }],
+            &factory,
+        )
+        .unwrap();
+        let old_ids: std::collections::HashSet<_> = app.panes.keys().copied().collect();
+
+        // Reset — new layout should use entirely new IDs.
+        app.reset_and_apply_layout(&[], &factory).unwrap();
+        let new_ids: std::collections::HashSet<_> = app.panes.keys().copied().collect();
+
+        assert!(
+            old_ids.is_disjoint(&new_ids),
+            "new layout should not reuse any pane IDs from before reset: old={old_ids:?} new={new_ids:?}"
+        );
     }
 
     // ── scrollback ────────────────────────────────────────────────────────────

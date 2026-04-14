@@ -90,6 +90,35 @@ tpane.bind_direct("alt+shift+down",  "resize_down")
 --   tpane.split_down()         -- right is split into top-right | bottom-right
 -- end)
 
+-- ── Named layouts ──────────────────────────────────────────────────────────
+-- Define named layouts that can be loaded at startup with `tpane -N` or
+-- switched to at any time with Ctrl+B → Ctrl+N.
+--
+-- tpane.define_layout(N, function() ... end) does two things automatically:
+--   1. Records the layout definition for later use.
+--   2. Binds Ctrl+N (after the Ctrl+B prefix) to "load_layout_N".
+--      You can override this by calling tpane.bind("ctrl+N", ...) afterwards.
+--
+-- Inside a layout function you can use:
+--   tpane.split_right(ratio)   -- same as on_startup helpers
+--   tpane.split_down(ratio)    -- (and all other split / focus helpers)
+--   tpane.run("command")       -- send a command to the active pane's shell
+--                              -- (like tmux send-keys; text is sent verbatim)
+--   tpane.focus_left()         -- move focus after setting up splits
+--
+-- Example — Layout 1: neovim on the left, lazygit top-right, copilot bottom-right.
+-- Launch with: tpane -1
+-- Switch to at runtime: Ctrl+B → Ctrl+1
+--
+-- tpane.define_layout(1, function()
+--   tpane.run("nvim .")          -- open neovim in the initial (left) pane
+--   tpane.split_right(0.6)       -- left keeps 60%, new right pane is now active
+--   tpane.run("lazygit")         -- open lazygit in the top-right pane
+--   tpane.split_down()           -- split right pane; new bottom pane is now active
+--   tpane.run("copilot")         -- open copilot in the bottom-right pane
+--   tpane.focus_left()           -- move focus back to neovim on the left
+-- end)
+
 -- Settings
 -- Show keybinding cheatsheet when prefix key (Ctrl+B) is pressed.
 -- Set to false to disable.

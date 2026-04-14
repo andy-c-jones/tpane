@@ -110,6 +110,39 @@ impl Layout {
         }
     }
 
+    /// Create a fresh single-pane layout whose IDs start at `start_id`.
+    ///
+    /// Use this when resetting the layout so that new pane IDs never collide
+    /// with IDs from any previously-created layout instance.  This prevents
+    /// stale [`crate::traits::AppEvent::PaneExit`] events (enqueued for old
+    /// panes that have since been dropped) from accidentally matching newly
+    /// spawned panes.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// // The old layout used IDs 0..=3; continue from 4 so nothing clashes.
+    /// let new_layout = Layout::new_from(4);
+    /// assert_eq!(new_layout.active, PaneId(4));
+    /// ```
+    pub fn new_from(start_id: u32) -> Self {
+        let root_id = PaneId(start_id);
+        Self {
+            root: Node::Leaf(root_id),
+            active: root_id,
+            next_id: start_id + 1,
+            focus_history: Vec::new(),
+        }
+    }
+
+    /// Return the next pane ID that will be allocated by this layout instance.
+    ///
+    /// Useful when handing off to [`Self::new_from`] so that a fresh layout
+    /// continues from a safe, non-colliding value.
+    pub fn peek_next_id(&self) -> u32 {
+        self.next_id
+    }
+
     /// Allocate and return a new unique pane identifier.
     ///
     /// IDs are monotonically increasing within a [`Layout`] instance.
