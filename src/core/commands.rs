@@ -34,6 +34,32 @@ pub enum Command {
     /// Grow the active pane downward (move its bottom edge downward).
     ResizeDown,
     Quit,
+    /// Close all panes and apply the named layout with the given index.
+    ///
+    /// Bound by `tpane.define_layout(N, ...)` and the `"load_layout_N"` command name.
+    LoadLayout(u8),
+}
+
+/// A single step recorded in a layout definition.
+///
+/// Used by [`crate::config::lua::LuaConfig`] to describe startup sequences and
+/// named layouts, and consumed by [`crate::app::App::apply_layout`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum LayoutAction {
+    /// Perform a split (or other non-program command) with an optional ratio.
+    ///
+    /// The ratio is the fraction of space the currently-active pane keeps after
+    /// the split (0.0–1.0, clamped to [0.05, 0.95]).
+    Split { cmd: Command, ratio: Option<f64> },
+    /// Write a command string to the currently-active pane's shell, as if typed.
+    ///
+    /// Sends `"{program}\n"` via [`crate::traits::PaneBackend::write_input`].
+    /// Input is buffered until the PTY is ready, so this is safe to call
+    /// immediately after a split even before the shell has started.
+    ///
+    /// **Note:** This sends raw text to the shell (like tmux `send-keys`). It
+    /// does not exec the program directly, so shell quoting rules apply.
+    RunInPane(String),
 }
 
 impl Command {
@@ -70,6 +96,10 @@ impl Command {
             "resize_up" => Some(Self::ResizeUp),
             "resize_down" => Some(Self::ResizeDown),
             "quit" => Some(Self::Quit),
+            s if s.starts_with("load_layout_") => s["load_layout_".len()..]
+                .parse::<u8>()
+                .ok()
+                .map(Self::LoadLayout),
             _ => None,
         }
     }
@@ -102,6 +132,8 @@ mod tests {
             ("resize_up", Command::ResizeUp),
             ("resize_down", Command::ResizeDown),
             ("quit", Command::Quit),
+            ("load_layout_1", Command::LoadLayout(1)),
+            ("load_layout_9", Command::LoadLayout(9)),
         ];
         for (name, expected) in cases {
             assert_eq!(
@@ -117,5 +149,7 @@ mod tests {
         assert!(Command::from_name("").is_none());
         assert!(Command::from_name("QUIT").is_none());
         assert!(Command::from_name("noop").is_none());
+        assert!(Command::from_name("load_layout_").is_none());
+        assert!(Command::from_name("load_layout_abc").is_none());
     }
 }

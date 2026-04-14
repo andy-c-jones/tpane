@@ -1,12 +1,13 @@
 //! Lua-backed configuration loading and binding extraction.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use mlua::prelude::*;
 
 use crate::config::defaults::DEFAULT_CONFIG;
-use crate::core::commands::Command;
+use crate::core::commands::{Command, LayoutAction};
 use crate::core::keymap::{KeyChord, KeyMap};
 
 /// Resolved configuration after loading `main.lua`.
@@ -14,14 +15,19 @@ use crate::core::keymap::{KeyChord, KeyMap};
 /// # Fields
 ///
 /// - [`Self::keymap`]: resolved prefix/direct key bindings
-/// - [`Self::startup_commands`]: startup command sequence captured from Lua
+/// - [`Self::startup_commands`]: startup layout steps captured from `tpane.on_startup`
+/// - [`Self::named_layouts`]: named layout definitions from `tpane.define_layout`
 /// - [`Self::show_cheatsheet`]: whether prefix-mode cheatsheet is shown
 pub struct LuaConfig {
     /// Effective key map consumed by [`crate::app::App`].
     pub keymap: KeyMap,
-    /// Commands to run at startup (from tpane.on_startup), each paired with an optional split ratio.
-    /// The ratio is the fraction of space the *active pane* keeps after the split (0.0–1.0).
-    pub startup_commands: Vec<(Command, Option<f64>)>,
+    /// Layout steps to run at startup (from `tpane.on_startup { ... }`).
+    pub startup_commands: Vec<LayoutAction>,
+    /// Named layouts indexed by number (from `tpane.define_layout(N, ...)`).
+    ///
+    /// Each layout is a sequence of [`LayoutAction`]s that [`crate::app::App`]
+    /// can apply to reset and rebuild the pane tree.
+    pub named_layouts: HashMap<u8, Vec<LayoutAction>>,
     /// Show keybinding cheatsheet when prefix key is active.
     ///
     /// This toggles prefix-mode UI hints in [`crate::platform::renderer`].
@@ -111,17 +117,35 @@ impl LuaConfig {
         let lua = Lua::new();
         let mut keymap = KeyMap::default();
 
-        // Build the `tpane` table that Lua scripts interact with.
-        // Bindings are collected into a Rust-side Vec and applied after execution.
+        // ── Shared recording state ────────────────────────────────────────────
+
+        // Flat list of (chord_str, cmd_name) for keybindings (prefix + direct).
         let bindings: std::sync::Arc<parking_lot::Mutex<Vec<(String, String)>>> =
             std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
 
+        // Typed action recorders.  Split helpers and tpane.run() write into
+        // whichever Vec is "current".  Default target = startup_actions (for
+        // on_startup).  define_layout(N, fn) swaps the target to a temporary
+        // layout-specific Vec for the duration of the callback.
+        let startup_actions: std::sync::Arc<parking_lot::Mutex<Vec<LayoutAction>>> =
+            std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+
+        // While inside a define_layout callback this holds the live Vec being
+        // built for layout N.  None when we're outside any layout definition.
+        let layout_recording: std::sync::Arc<parking_lot::Mutex<Option<Vec<LayoutAction>>>> =
+            std::sync::Arc::new(parking_lot::Mutex::new(None));
+
+        // Named layouts collected after define_layout callbacks complete.
+        let named_layouts_store: std::sync::Arc<
+            parking_lot::Mutex<HashMap<u8, Vec<LayoutAction>>>,
+        > = std::sync::Arc::new(parking_lot::Mutex::new(HashMap::new()));
+
         {
             let bindings_ref = bindings.clone();
-
             let tpane_table = lua.create_table().map_err(lua_err)?;
 
-            // tpane.bind(chord, command_name)
+            // ── tpane.bind / tpane.bind_direct ───────────────────────────────
+
             let bind_fn = {
                 let b = bindings_ref.clone();
                 lua.create_function(move |_, (chord, cmd): (String, String)| {
@@ -132,7 +156,6 @@ impl LuaConfig {
             };
             tpane_table.set("bind", bind_fn).map_err(lua_err)?;
 
-            // tpane.bind_direct(chord, command_name) — fires without the prefix key; holdable.
             let bind_direct_fn = {
                 let b = bindings_ref.clone();
                 lua.create_function(move |_, (chord, cmd): (String, String)| {
@@ -145,23 +168,73 @@ impl LuaConfig {
                 .set("bind_direct", bind_direct_fn)
                 .map_err(lua_err)?;
 
-            // tpane.on_startup(fn) — accepted but startup logic is deferred via __startup__ keys
-            let on_startup_fn = {
-                lua.create_function(move |_, f: LuaFunction| {
-                    // Call immediately so split helpers can record their commands
-                    // mlua 0.11: Function::call takes one generic arg (return type only)
-                    let _ = f.call::<()>(());
-                    Ok(())
-                })
-                .map_err(lua_err)?
-            };
-            tpane_table
-                .set("on_startup", on_startup_fn)
-                .map_err(lua_err)?;
+            // ── tpane.run(program) ────────────────────────────────────────────
+            // Sends `program + "\n"` to the currently-active pane's shell.
+            // Works both inside on_startup and inside define_layout.
+            {
+                let sa = startup_actions.clone();
+                let lr = layout_recording.clone();
+                let run_fn = lua
+                    .create_function(move |_, program: String| {
+                        let action = LayoutAction::RunInPane(program);
+                        let mut recording = lr.lock();
+                        if let Some(steps) = recording.as_mut() {
+                            steps.push(action);
+                        } else {
+                            sa.lock().push(action);
+                        }
+                        Ok(())
+                    })
+                    .map_err(lua_err)?;
+                tpane_table.set("run", run_fn).map_err(lua_err)?;
+            }
 
-            // Expose split helpers for use inside on_startup.
-            // Each accepts an optional ratio (0.05–0.95, clamped): fraction of space the current
-            // (active) pane keeps after the split. Omitting the argument uses 50/50.
+            // ── tpane.on_startup(fn) ──────────────────────────────────────────
+            // Accepts a function and calls it immediately so split helpers and
+            // tpane.run() can record their actions into startup_actions.
+            {
+                let on_startup_fn = lua
+                    .create_function(move |_, f: LuaFunction| {
+                        // mlua 0.11: Function::call takes one generic arg (return type only)
+                        let _ = f.call::<()>(());
+                        Ok(())
+                    })
+                    .map_err(lua_err)?;
+                tpane_table
+                    .set("on_startup", on_startup_fn)
+                    .map_err(lua_err)?;
+            }
+
+            // ── tpane.define_layout(n, fn) ────────────────────────────────────
+            // Defines named layout N.  During the callback, split helpers and
+            // tpane.run() record into a temporary Vec that is stored under N.
+            // Also auto-binds Ctrl+N → "load_layout_N" (can be overridden with
+            // an explicit tpane.bind("ctrl+N", ...) after this call).
+            {
+                let lr = layout_recording.clone();
+                let nls = named_layouts_store.clone();
+                let b = bindings_ref.clone();
+                let define_layout_fn = lua
+                    .create_function(move |_, (n, f): (u8, LuaFunction)| {
+                        *lr.lock() = Some(Vec::new());
+                        let _ = f.call::<()>(());
+                        if let Some(steps) = lr.lock().take() {
+                            nls.lock().insert(n, steps);
+                        }
+                        // Auto-bind Ctrl+N → load_layout_N.
+                        b.lock()
+                            .push((format!("ctrl+{}", n), format!("load_layout_{}", n)));
+                        Ok(())
+                    })
+                    .map_err(lua_err)?;
+                tpane_table
+                    .set("define_layout", define_layout_fn)
+                    .map_err(lua_err)?;
+            }
+
+            // ── Split / focus helpers ─────────────────────────────────────────
+            // Each helper accepts an optional ratio and records a LayoutAction::Split
+            // into whichever Vec is currently active (define_layout or on_startup).
             for name in &[
                 "split_vertical",
                 "split_horizontal",
@@ -172,14 +245,25 @@ impl LuaConfig {
                 "close",
                 "focus_next",
                 "focus_prev",
+                "focus_left",
+                "focus_right",
+                "focus_up",
+                "focus_down",
             ] {
                 let n = *name;
-                let b = bindings_ref.clone();
+                let sa = startup_actions.clone();
+                let lr = layout_recording.clone();
                 let stub = lua
                     .create_function(move |_, ratio: Option<f64>| {
-                        // Encode the optional ratio in the value field; empty string = no ratio.
-                        let ratio_str = ratio.map(|r| r.to_string()).unwrap_or_default();
-                        b.lock().push((format!("__startup__{}", n), ratio_str));
+                        if let Some(cmd) = Command::from_name(n) {
+                            let action = LayoutAction::Split { cmd, ratio };
+                            let mut recording = lr.lock();
+                            if let Some(steps) = recording.as_mut() {
+                                steps.push(action);
+                            } else {
+                                sa.lock().push(action);
+                            }
+                        }
                         Ok(())
                     })
                     .map_err(lua_err)?;
@@ -200,28 +284,16 @@ impl LuaConfig {
             .context("executing lua source")?;
 
         // Read back settings from the tpane table.
-        // mlua 0.11: Table::get takes one generic arg (value type only)
         let show_cheatsheet = lua
             .globals()
             .get::<LuaTable>("tpane")
             .ok()
             .and_then(|t| t.get::<bool>("show_cheatsheet").ok())
-            .unwrap_or(true); // default: on
+            .unwrap_or(true);
 
-        // Apply collected bindings to the keymap; collect startup commands.
-        let mut startup_commands: Vec<(Command, Option<f64>)> = Vec::new();
+        // Apply collected keybindings to the keymap.
         for (chord_str, cmd_name) in bindings.lock().iter() {
-            if let Some(stripped) = chord_str.strip_prefix("__startup__") {
-                if let Some(cmd) = Command::from_name(stripped) {
-                    // cmd_name holds the encoded ratio string (empty = no ratio).
-                    let ratio = if cmd_name.is_empty() {
-                        None
-                    } else {
-                        cmd_name.parse::<f64>().ok()
-                    };
-                    startup_commands.push((cmd, ratio));
-                }
-            } else if let Some(stripped) = chord_str.strip_prefix("__direct__") {
+            if let Some(stripped) = chord_str.strip_prefix("__direct__") {
                 if let Some(chord) = KeyChord::parse(stripped) {
                     if let Some(cmd) = Command::from_name(cmd_name) {
                         keymap.bind_direct(chord, cmd);
@@ -248,9 +320,13 @@ impl LuaConfig {
             }
         }
 
+        let startup_commands = std::mem::take(&mut *startup_actions.lock());
+        let named_layouts = std::mem::take(&mut *named_layouts_store.lock());
+
         Ok(LuaConfig {
             keymap,
             startup_commands,
+            named_layouts,
             show_cheatsheet,
             _lua: lua,
         })
@@ -262,13 +338,6 @@ mod tests {
     use super::*;
     use crate::config::defaults::DEFAULT_CONFIG;
     use crossterm::event::{KeyCode, KeyModifiers};
-
-    fn ctrl_shift(c: char) -> crossterm::event::KeyEvent {
-        crossterm::event::KeyEvent::new(
-            KeyCode::Char(c),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-        )
-    }
 
     // ── default config loads without errors ───────────────────────────────────
 
@@ -356,8 +425,14 @@ end)
         assert_eq!(
             cfg.startup_commands,
             vec![
-                (Command::SplitVertical, None),
-                (Command::SplitHorizontal, None),
+                LayoutAction::Split {
+                    cmd: Command::SplitVertical,
+                    ratio: None
+                },
+                LayoutAction::Split {
+                    cmd: Command::SplitHorizontal,
+                    ratio: None
+                },
             ]
         );
     }
@@ -367,6 +442,20 @@ end)
         let src = r#"tpane.on_startup(function() end)"#;
         let cfg = LuaConfig::load_from_source(src).unwrap();
         assert!(cfg.startup_commands.is_empty());
+    }
+
+    #[test]
+    fn on_startup_run_records_run_in_pane() {
+        let src = r#"
+tpane.on_startup(function()
+  tpane.run("nvim .")
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        assert_eq!(
+            cfg.startup_commands,
+            vec![LayoutAction::RunInPane("nvim .".to_string())]
+        );
     }
 
     // ── error handling ────────────────────────────────────────────────────────
@@ -470,7 +559,13 @@ tpane.on_startup(function()
 end)
 "#;
         let cfg = LuaConfig::load_from_source(src).unwrap();
-        assert_eq!(cfg.startup_commands, vec![(Command::SplitRight, None)]);
+        assert_eq!(
+            cfg.startup_commands,
+            vec![LayoutAction::Split {
+                cmd: Command::SplitRight,
+                ratio: None
+            }]
+        );
     }
 
     #[test]
@@ -481,7 +576,13 @@ tpane.on_startup(function()
 end)
 "#;
         let cfg = LuaConfig::load_from_source(src).unwrap();
-        assert_eq!(cfg.startup_commands, vec![(Command::SplitDown, None)]);
+        assert_eq!(
+            cfg.startup_commands,
+            vec![LayoutAction::Split {
+                cmd: Command::SplitDown,
+                ratio: None
+            }]
+        );
     }
 
     // ── on_startup with explicit ratio ───────────────────────────────────────
@@ -494,9 +595,13 @@ tpane.on_startup(function()
 end)
 "#;
         let cfg = LuaConfig::load_from_source(src).unwrap();
-        let (cmd, ratio) = &cfg.startup_commands[0];
-        assert_eq!(*cmd, Command::SplitRight);
-        assert!((ratio.unwrap() - 0.3).abs() < 1e-9);
+        match &cfg.startup_commands[0] {
+            LayoutAction::Split { cmd, ratio } => {
+                assert_eq!(*cmd, Command::SplitRight);
+                assert!((ratio.unwrap() - 0.3).abs() < 1e-9);
+            }
+            other => panic!("expected Split, got {other:?}"),
+        }
     }
 
     #[test]
@@ -507,9 +612,13 @@ tpane.on_startup(function()
 end)
 "#;
         let cfg = LuaConfig::load_from_source(src).unwrap();
-        let (cmd, ratio) = &cfg.startup_commands[0];
-        assert_eq!(*cmd, Command::SplitDown);
-        assert!((ratio.unwrap() - 0.6).abs() < 1e-9);
+        match &cfg.startup_commands[0] {
+            LayoutAction::Split { cmd, ratio } => {
+                assert_eq!(*cmd, Command::SplitDown);
+                assert!((ratio.unwrap() - 0.6).abs() < 1e-9);
+            }
+            other => panic!("expected Split, got {other:?}"),
+        }
     }
 
     #[test]
@@ -522,11 +631,122 @@ end)
 "#;
         let cfg = LuaConfig::load_from_source(src).unwrap();
         assert_eq!(cfg.startup_commands.len(), 2);
-        let (cmd0, ratio0) = &cfg.startup_commands[0];
-        let (cmd1, ratio1) = &cfg.startup_commands[1];
-        assert_eq!(*cmd0, Command::SplitRight);
-        assert!((ratio0.unwrap() - 0.7).abs() < 1e-9);
-        assert_eq!(*cmd1, Command::SplitDown);
-        assert!(ratio1.is_none());
+        match &cfg.startup_commands[0] {
+            LayoutAction::Split { cmd, ratio } => {
+                assert_eq!(*cmd, Command::SplitRight);
+                assert!((ratio.unwrap() - 0.7).abs() < 1e-9);
+            }
+            other => panic!("expected Split, got {other:?}"),
+        }
+        match &cfg.startup_commands[1] {
+            LayoutAction::Split { cmd, ratio } => {
+                assert_eq!(*cmd, Command::SplitDown);
+                assert!(ratio.is_none());
+            }
+            other => panic!("expected Split, got {other:?}"),
+        }
+    }
+
+    // ── define_layout ────────────────────────────────────────────────────────
+
+    #[test]
+    fn define_layout_records_named_layout() {
+        let src = r#"
+tpane.define_layout(1, function()
+  tpane.split_right(0.6)
+  tpane.split_down()
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        assert!(cfg.startup_commands.is_empty());
+        let layout = cfg.named_layouts.get(&1).expect("layout 1 should exist");
+        assert_eq!(layout.len(), 2);
+        match &layout[0] {
+            LayoutAction::Split { cmd, ratio } => {
+                assert_eq!(*cmd, Command::SplitRight);
+                assert!((ratio.unwrap() - 0.6).abs() < 1e-9);
+            }
+            other => panic!("expected Split, got {other:?}"),
+        }
+        match &layout[1] {
+            LayoutAction::Split { cmd, ratio } => {
+                assert_eq!(*cmd, Command::SplitDown);
+                assert!(ratio.is_none());
+            }
+            other => panic!("expected Split, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn define_layout_with_run_records_run_in_pane() {
+        let src = r#"
+tpane.define_layout(1, function()
+  tpane.run("nvim .")
+  tpane.split_right(0.6)
+  tpane.run("lazygit")
+  tpane.split_down()
+  tpane.run("copilot")
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        let layout = cfg.named_layouts.get(&1).unwrap();
+        assert_eq!(layout.len(), 5);
+        assert_eq!(layout[0], LayoutAction::RunInPane("nvim .".to_string()));
+        assert_eq!(layout[2], LayoutAction::RunInPane("lazygit".to_string()));
+        assert_eq!(layout[4], LayoutAction::RunInPane("copilot".to_string()));
+    }
+
+    #[test]
+    fn define_layout_auto_binds_ctrl_n() {
+        let src = r#"
+tpane.define_layout(1, function()
+  tpane.split_right()
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        let event = crossterm::event::KeyEvent::new(KeyCode::Char('1'), KeyModifiers::CONTROL);
+        assert_eq!(
+            cfg.keymap.lookup_prefix(&event),
+            Some(&Command::LoadLayout(1))
+        );
+    }
+
+    #[test]
+    fn define_layout_auto_bind_overridable() {
+        // An explicit tpane.bind after define_layout should override the auto-bind.
+        let src = r#"
+tpane.define_layout(1, function() end)
+tpane.bind("ctrl+1", "quit")
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        let event = crossterm::event::KeyEvent::new(KeyCode::Char('1'), KeyModifiers::CONTROL);
+        assert_eq!(cfg.keymap.lookup_prefix(&event), Some(&Command::Quit));
+    }
+
+    #[test]
+    fn define_layout_does_not_pollute_startup_commands() {
+        let src = r#"
+tpane.define_layout(2, function()
+  tpane.split_right()
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        assert!(cfg.startup_commands.is_empty());
+    }
+
+    #[test]
+    fn multiple_define_layouts_are_independent() {
+        let src = r#"
+tpane.define_layout(1, function()
+  tpane.split_right()
+end)
+tpane.define_layout(2, function()
+  tpane.split_down()
+  tpane.split_right()
+end)
+"#;
+        let cfg = LuaConfig::load_from_source(src).unwrap();
+        assert_eq!(cfg.named_layouts.get(&1).unwrap().len(), 1);
+        assert_eq!(cfg.named_layouts.get(&2).unwrap().len(), 2);
     }
 }

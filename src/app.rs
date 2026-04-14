@@ -16,7 +16,7 @@ use std::time::Duration;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 
-use crate::core::commands::Command;
+use crate::core::commands::{Command, LayoutAction};
 use crate::core::keymap::KeyMap;
 use crate::core::layout::{
     Direction, DividerInfo, Layout, Orientation, PaneId, SplitHandle, SplitPosition,
@@ -63,6 +63,8 @@ pub struct App<B: PaneBackend> {
     dragging: bool,
     /// Active divider drag for mouse-driven pane resize.
     resize_drag: Option<DividerDrag>,
+    /// Named layouts loaded from config (from `tpane.define_layout`).
+    named_layouts: HashMap<u8, Vec<LayoutAction>>,
 }
 
 impl<B: PaneBackend> App<B> {
@@ -80,6 +82,7 @@ impl<B: PaneBackend> App<B> {
         keymap: KeyMap,
         terminal_size: (u16, u16),
         show_cheatsheet: bool,
+        named_layouts: HashMap<u8, Vec<LayoutAction>>,
         factory: &F,
     ) -> Result<Self> {
         let layout = Layout::new();
@@ -104,6 +107,7 @@ impl<B: PaneBackend> App<B> {
             drag_origin: None,
             dragging: false,
             resize_drag: None,
+            named_layouts,
         })
     }
 
@@ -408,6 +412,11 @@ impl<B: PaneBackend> App<B> {
                 self.refresh_pane_sizes();
             }
             Command::Quit => self.running = false,
+            Command::LoadLayout(n) => {
+                if let Some(steps) = self.named_layouts.get(&n).cloned() {
+                    self.reset_and_apply_layout(&steps, factory)?;
+                }
+            }
         }
         Ok(())
     }
@@ -476,63 +485,111 @@ impl<B: PaneBackend> App<B> {
         self.refresh_pane_sizes();
     }
 
-    /// Run startup layout commands (from `tpane.on_startup { ... }` in main.lua).
-    /// Each command may carry an optional split ratio; non-split commands ignore the ratio.
+    /// Apply a sequence of layout actions (from `tpane.on_startup` or a named layout).
     ///
-    /// The `ratio` for split commands is the fraction of space that the **currently active pane
-    /// keeps** after the split — e.g. `split_right(0.7)` leaves the original pane at 70% and
-    /// the new right pane at 30%.  The value is clamped to [0.05, 0.95].  `None` uses the
-    /// default 50/50 split.
+    /// # Action semantics
     ///
-    /// # Notes
+    /// - [`LayoutAction::Split`]: perform a split with an optional ratio.  The ratio is the
+    ///   fraction of space the **currently active pane keeps** — e.g. `split_right(0.7)` leaves
+    ///   the original pane at 70% and the new right pane at 30%.  Clamped to [0.05, 0.95].
+    ///   `None` uses the default 50/50 split.
+    /// - [`LayoutAction::RunInPane`]: write `program + "\n"` to the active pane's shell via
+    ///   [`crate::traits::PaneBackend::write_input`].  Input is buffered until the PTY is
+    ///   ready, so this is safe to call immediately after a split.
     ///
-    /// Non-split commands are dispatched through the normal command handler.
+    /// Non-split `Split` actions (e.g. `FocusLeft`) are dispatched through the normal
+    /// command handler so they take effect during layout setup.
     ///
     /// # Errors
     ///
-    /// Returns an error if a split requires spawning a pane backend and
-    /// creation fails.
-    pub fn apply_startup_commands<F: PaneFactory<B>>(
+    /// Returns an error if a split requires spawning a pane backend and creation fails.
+    pub fn apply_layout<F: PaneFactory<B>>(
         &mut self,
-        cmds: &[(Command, Option<f64>)],
+        actions: &[LayoutAction],
         factory: &F,
     ) -> Result<()> {
-        for (cmd, ratio) in cmds {
-            match cmd {
-                Command::SplitVertical => {
-                    self.split(Orientation::Vertical, SplitPosition::After, *ratio, factory)?
+        for action in actions {
+            match action {
+                LayoutAction::Split { cmd, ratio } => match cmd {
+                    Command::SplitVertical => {
+                        self.split(Orientation::Vertical, SplitPosition::After, *ratio, factory)?
+                    }
+                    Command::SplitHorizontal => self.split(
+                        Orientation::Horizontal,
+                        SplitPosition::After,
+                        *ratio,
+                        factory,
+                    )?,
+                    Command::SplitLeft => self.split(
+                        Orientation::Vertical,
+                        SplitPosition::Before,
+                        *ratio,
+                        factory,
+                    )?,
+                    Command::SplitRight => {
+                        self.split(Orientation::Vertical, SplitPosition::After, *ratio, factory)?
+                    }
+                    Command::SplitUp => self.split(
+                        Orientation::Horizontal,
+                        SplitPosition::Before,
+                        *ratio,
+                        factory,
+                    )?,
+                    Command::SplitDown => self.split(
+                        Orientation::Horizontal,
+                        SplitPosition::After,
+                        *ratio,
+                        factory,
+                    )?,
+                    other => self.dispatch(other.clone(), factory)?,
+                },
+                LayoutAction::RunInPane(program) => {
+                    if let Some(pane) = self.panes.get_mut(&self.layout.active) {
+                        pane.write_input(format!("{}\n", program).as_bytes())?;
+                    }
                 }
-                Command::SplitHorizontal => self.split(
-                    Orientation::Horizontal,
-                    SplitPosition::After,
-                    *ratio,
-                    factory,
-                )?,
-                Command::SplitLeft => self.split(
-                    Orientation::Vertical,
-                    SplitPosition::Before,
-                    *ratio,
-                    factory,
-                )?,
-                Command::SplitRight => {
-                    self.split(Orientation::Vertical, SplitPosition::After, *ratio, factory)?
-                }
-                Command::SplitUp => self.split(
-                    Orientation::Horizontal,
-                    SplitPosition::Before,
-                    *ratio,
-                    factory,
-                )?,
-                Command::SplitDown => self.split(
-                    Orientation::Horizontal,
-                    SplitPosition::After,
-                    *ratio,
-                    factory,
-                )?,
-                other => self.dispatch(other.clone(), factory)?,
             }
         }
         Ok(())
+    }
+
+    /// Close all existing panes and apply `steps` as a fresh layout.
+    ///
+    /// Uses [`Layout::new_from`] to continue from a monotonically higher PaneId so
+    /// that stale [`crate::traits::AppEvent::PaneExit`] events for old panes cannot
+    /// accidentally match newly spawned panes (their IDs will never collide).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if spawning the new root pane backend fails.
+    pub fn reset_and_apply_layout<F: PaneFactory<B>>(
+        &mut self,
+        steps: &[LayoutAction],
+        factory: &F,
+    ) -> Result<()> {
+        // Capture the next ID before dropping the old layout so the new root
+        // gets a never-before-seen ID.
+        let next_id = self.layout.peek_next_id();
+
+        // Drop all existing pane backends (their PTYs will terminate).
+        self.panes.clear();
+        self.selection = None;
+        self.prefix_active = false;
+        self.drag_origin = None;
+        self.dragging = false;
+        self.resize_drag = None;
+
+        // Create a fresh layout continuing from a safe ID offset.
+        self.layout = Layout::new_from(next_id);
+        let root_id = self.layout.active;
+
+        let (w, h) = self.terminal_size;
+        let pane_w = w.saturating_sub(2).max(4);
+        let pane_h = h.saturating_sub(2).max(2);
+        let pane = factory.spawn(root_id, pane_w, pane_h)?;
+        self.panes.insert(root_id, pane);
+
+        self.apply_layout(steps, factory)
     }
 
     /// Recompute pane geometry and notify all backends of their new size.

@@ -208,15 +208,21 @@ impl PaneBackend for PaneState {
 pub struct LivePaneFactory {
     event_tx: mpsc::SyncSender<PaneEvent>,
     event_rx: Option<mpsc::Receiver<PaneEvent>>,
+    cwd: std::path::PathBuf,
 }
 
 impl LivePaneFactory {
     /// Create a pane factory and its internal bounded event channel.
+    ///
+    /// Captures the current working directory at construction time so that
+    /// every spawned pane starts in the directory where tpane was launched.
     pub fn new() -> Self {
         let (tx, rx) = mpsc::sync_channel(PANE_EVENT_CHANNEL_CAPACITY);
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         Self {
             event_tx: tx,
             event_rx: Some(rx),
+            cwd,
         }
     }
 
@@ -232,7 +238,7 @@ impl LivePaneFactory {
 
 impl PaneFactory<PaneState> for LivePaneFactory {
     fn spawn(&self, id: PaneId, cols: u16, rows: u16) -> Result<PaneState> {
-        PaneState::spawn(id, cols, rows, self.event_tx.clone())
+        PaneState::spawn(id, cols, rows, self.event_tx.clone(), self.cwd.clone())
     }
 }
 

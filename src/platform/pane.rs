@@ -160,6 +160,7 @@ impl PaneState {
         cols: u16,
         rows: u16,
         event_tx: mpsc::SyncSender<PaneEvent>,
+        cwd: std::path::PathBuf,
     ) -> Result<Self> {
         // Bounded channel for responses the terminal emulator needs to send back
         // to the shell (e.g. DA1 Primary Device Attribute replies).
@@ -216,6 +217,7 @@ impl PaneState {
                     ready_ref,
                     content_version_ref,
                     reply_rx,
+                    cwd,
                 ) {
                     log::error!("Failed to spawn PTY for pane {:?}: {}", id, e);
                 }
@@ -442,6 +444,7 @@ fn spawn_pty(
     ready: Arc<std::sync::atomic::AtomicBool>,
     content_version: Arc<AtomicU64>,
     reply_rx: mpsc::Receiver<String>,
+    cwd: std::path::PathBuf,
 ) -> Result<()> {
     let pty_system = NativePtySystem::default();
     let size = PtySize {
@@ -455,6 +458,7 @@ fn spawn_pty(
     let shell = shell_command();
     let mut cmd = CommandBuilder::new(&shell);
     cmd.env("TERM", "xterm-256color");
+    cmd.cwd(&cwd);
 
     let _child = pair.slave.spawn_command(cmd).context("spawning shell")?;
 
